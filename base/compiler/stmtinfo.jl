@@ -37,51 +37,58 @@ struct MethodMatchInfo <: CallInfo
     mt::MethodTable
     atype
     fullmatch::Bool
+    edges::Vector{Union{Nothing,CodeInstance}}
+    function MethodMatchInfo(
+        results::MethodLookupResult, mt::MethodTable, @nospecialize(atype), fullmatch::Bool)
+        edges = fill!(Vector{Union{Nothing,CodeInstance}}(undef, length(results)), nothing)
+        return new(results, mt, atype, fullmatch, edges)
+    end
 end
 function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
-    matches = info.results.matches
     if !fully_covering(info)
         # add legacy-style missing backedge info also
         exists = false
         for i in 1:length(edges)
-            if edges[i] === info.mt && edges[i + 1] == info.atype
+            if edges[i] === info.mt && edges[i+1] == info.atype
                 exists = true
                 break
             end
         end
         if !exists
-            push!(edges, info.mt)
-            push!(edges, info.atype)
+            push!(edges, info.mt, info.atype)
         end
     end
-    if length(matches) == 1
-        # try the optimized format for the representation, if possible and applicable
-        # if this doesn't succeed, the backedge will be less precise,
-        # but the forward edge will maintain the precision
-        m = matches[1]::Core.MethodMatch
-        mi = specialize_method(m)
-        if mi.specTypes === m.spec_types
-            add_one_edge!(edges, mi)
-            return nothing
+    nmatches = length(info.results)
+    if nmatches == length(info.edges) == 1
+        edge = info.edges[1]
+        if edge !== nothing
+            # try the optimized format for the representation, if possible and applicable
+            # if this doesn't succeed, the backedge will be less precise,
+            # but the forward edge will maintain the precision
+            if edge.def.specTypes === info.results[1].spec_types
+                add_one_edge!(edges, edge.def) # TODO CodeInstance as edge
+                return nothing
+            end
         end
     end
     # add check for whether this lookup already existed in the edges list
     for i in 1:length(edges)
-        if edges[i] === length(matches) && edges[i + 1] == info.atype
+        if edges[i] === nmatches && edges[i+1] == info.atype
             return nothing
         end
     end
-    push!(edges, length(matches))
-    push!(edges, info.atype)
-    for m in matches
-        mi = specialize_method(m::Core.MethodMatch)
-        push!(edges, mi)
+    push!(edges, nmatches, info.atype)
+    for i = 1:nmatches
+        edge = info.edges[i]
+        if edge !== nothing
+            push!(edges, edge.def) # TODO CodeInstance as edge
+        end
     end
     nothing
 end
 function add_one_edge!(edges::Vector{Any}, mi::MethodInstance)
     for i in 1:length(edges)
-        if edges[i] === mi && !(i > 1 && edges[i - 1] isa Type)
+        if edges[i] === mi && !(i > 1 && edges[i-1] isa Type)
             return
         end
     end
@@ -137,15 +144,15 @@ struct ConstPropResult <: ConstResult
 end
 
 struct ConcreteResult <: ConstResult
-    mi::MethodInstance
+    edge::CodeInstance
     effects::Effects
     result
-    ConcreteResult(mi::MethodInstance, effects::Effects) = new(mi, effects)
-    ConcreteResult(mi::MethodInstance, effects::Effects, @nospecialize val) = new(mi, effects, val)
+    ConcreteResult(edge::CodeInstance, effects::Effects) = new(edge, effects)
+    ConcreteResult(edge::CodeInstance, effects::Effects, @nospecialize val) = new(edge, effects, val)
 end
 
 struct SemiConcreteResult <: ConstResult
-    mi::MethodInstance
+    edge::CodeInstance
     ir::IRCode
     effects::Effects
     spec_info::SpecInfo
@@ -228,8 +235,6 @@ function add_edges_impl(edges::Vector{Any}, info::ApplyCallInfo)
         end
     end
 end
-# N.B. `ApplyCallInfo` doesn't need to implement the interfaces for the inlining,
-# since `Core._apply_iterate` is handled by the special case
 
 """
     info::UnionSplitApplyCallInfo <: CallInfo
@@ -242,8 +247,6 @@ struct UnionSplitApplyCallInfo <: CallInfo
 end
 add_edges_impl(edges::Vector{Any}, info::UnionSplitApplyCallInfo) =
     for split in info.infos; add_edges!(edges, split); end
-# N.B. `UnionSplitApplyCallInfo` doesn't need to implement the interfaces for the inlining,
-# since `Core._apply_iterate` is handled by the special case
 
 """
     info::InvokeCallInfo
@@ -253,24 +256,29 @@ the method that has been processed.
 Optionally keeps `info.result::InferenceResult` that keeps constant information.
 """
 struct InvokeCallInfo <: CallInfo
+    edge::Union{Nothing,CodeInstance}
     match::MethodMatch
     result::Union{Nothing,ConstResult}
     atype # ::Type
 end
-add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo) =
-    add_invoke_edge!(edges, info.atype, specialize_method(info.match))
+function add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo)
+    edge = info.edge
+    if edge !== nothing
+        add_invoke_edge!(edges, info.atype, edge.def) # TODO CodeInstance as edge
+    end
+end
 function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), mi::MethodInstance)
     for i in 2:length(edges)
-        if edges[i] === mi && edges[i - 1] isa Type && edges[i - 1] == atype
-            return
+        if edges[i] === mi
+            edge_minus_1 = edges[i-1]
+            if edge_minus_1 isa Type && edge_minus_1 == atype
+                return nothing
+            end
         end
     end
-    push!(edges, atype)
-    push!(edges, mi)
+    push!(edges, atype, mi)
     nothing
 end
-# N.B. `InvokeCallInfo` doesn't need to implement the interfaces for the inlining,
-# since `Core.invoke` is handled by the special case
 
 """
     info::OpaqueClosureCallInfo
@@ -280,13 +288,16 @@ the method that has been processed.
 Optionally keeps `info.result::InferenceResult` that keeps constant information.
 """
 struct OpaqueClosureCallInfo <: CallInfo
+    edge::Union{Nothing,CodeInstance}
     match::MethodMatch
     result::Union{Nothing,ConstResult}
 end
-add_edges_impl(edges::Vector{Any}, info::OpaqueClosureCallInfo) =
-    add_one_edge!(edges, specialize_method(info.match))
-# N.B. `OpaqueClosureCallInfo` doesn't need to implement the interfaces for the inlining,
-# since `Core.invoke` is handled by the special case
+function add_edges_impl(edges::Vector{Any}, info::OpaqueClosureCallInfo)
+    edge = info.edge
+    if edge !== nothing
+        add_one_edge!(edges, edge.def) # TODO CodeInstance as edge
+    end
+end
 
 """
     info::OpaqueClosureCreateInfo <: CallInfo
@@ -351,5 +362,10 @@ struct ModifyOpInfo <: CallInfo
     info::CallInfo # the callinfo for the `op(getval(), x)` call
 end
 add_edges_impl(edges::Vector{Any}, info::ModifyOpInfo) = add_edges!(edges, info.info)
+
+struct VirtualMethodMatchInfo <: CallInfo
+    info::CallInfo
+end
+add_edges_impl(edges::Vector{Any}, info::VirtualMethodMatchInfo) = add_edges!(edges, info.info)
 
 @specialize

@@ -68,7 +68,8 @@ struct InliningEdgeTracker
         new(state.edges, invokesig)
 end
 
-function add_inlining_edge!((; edges, invokesig)::InliningEdgeTracker, mi::MethodInstance)
+function add_inlining_edge!(et::InliningEdgeTracker, mi::MethodInstance)
+    (; edges, invokesig) = et
     if invokesig === nothing
         add_one_edge!(edges, mi)
     else # invoke backedge
@@ -1119,7 +1120,7 @@ function inline_apply!(todo::Vector{Pair{Int,Any}},
             # e.g. rewrite `((t::Tuple)...,)` to `t`
             nonempty_idx = 0
             𝕃ₒ = optimizer_lattice(state.interp)
-            for i = (arg_start + 1):length(argtypes)
+            for i = (arg_start+1):length(argtypes)
                 ti = argtypes[i]
                 ⊑(𝕃ₒ, ti, Tuple{}) && continue
                 if ⊑(𝕃ₒ, ti, Tuple) && nonempty_idx == 0
@@ -1137,7 +1138,7 @@ function inline_apply!(todo::Vector{Pair{Int,Any}},
         # Try to figure out the signature of the function being called
         # and if rewrite_apply_exprargs can deal with this form
         arginfos = MaybeAbstractIterationInfo[]
-        for i = (arg_start + 1):length(argtypes)
+        for i = (arg_start+1):length(argtypes)
             thisarginfo = nothing
             if !is_valid_type_for_apply_rewrite(argtypes[i], OptimizationParams(state.interp))
                 isa(info, ApplyCallInfo) || return nothing
@@ -1455,7 +1456,7 @@ end
 
 function semiconcrete_result_item(result::SemiConcreteResult,
         @nospecialize(info::CallInfo), flag::UInt32, state::InliningState)
-    mi = result.mi
+    mi = result.edge.def
     et = InliningEdgeTracker(state)
 
     if (!OptimizationParams(state.interp).inlining || is_stmt_noinline(flag) ||
@@ -1478,7 +1479,7 @@ end
 
 function handle_semi_concrete_result!(cases::Vector{InliningCase}, result::SemiConcreteResult,
     match::MethodMatch, @nospecialize(info::CallInfo), flag::UInt32, state::InliningState)
-    mi = result.mi
+    mi = result.edge.def
     spec_types = match.spec_types
     validate_sparams(mi.sparam_vals) || return false
     item = semiconcrete_result_item(result, info, flag, state)
@@ -1502,7 +1503,7 @@ function concrete_result_item(result::ConcreteResult, @nospecialize(info::CallIn
     invokesig::Union{Nothing,Vector{Any}}=nothing)
     if !may_inline_concrete_result(result)
         et = InliningEdgeTracker(state, invokesig)
-        return compileable_specialization(result.mi, result.effects, et, info;
+        return compileable_specialization(result.edge.def, result.effects, et, info;
             compilesig_invokes=OptimizationParams(state.interp).compilesig_invokes)
     end
     @assert result.effects === EFFECTS_TOTAL

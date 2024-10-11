@@ -252,8 +252,6 @@ struct BackedgeIterator
     backedges::Vector{Any}
 end
 
-const empty_backedge_iter = BackedgeIterator(Any[])
-
 struct BackedgePair
     sig # ::Union{Nothing,Type}
     caller::Union{MethodInstance,MethodTable}

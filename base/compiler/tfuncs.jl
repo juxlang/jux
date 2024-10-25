@@ -3012,7 +3012,7 @@ function abstract_applicable(interp::AbstractInterpreter, argtypes::Vector{Any},
         if rt !== Bool
             for i = 1:napplicable
                 (; match, edges, edge_idx) = applicable[i]
-                edges[edge_idx] = codeinstance_for_method_match_edge(interp, specialize_method(match))
+                edges[edge_idx] = codeinst_as_method_match_edge(interp, specialize_method(match))
             end
             info = VirtualMethodMatchInfo(matches.info)
         end
@@ -3055,18 +3055,11 @@ function _hasmethod_tfunc(interp::AbstractInterpreter, argtypes::Vector{Any}, sv
         vinfo = MethodMatchInfo(vresults, mt, types, false) # XXX: this should actually be an info with invoke-type edge
     else
         rt = Const(true)
-        edge = codeinstance_for_method_match_edge(interp, specialize_method(match))
+        edge = codeinst_as_method_match_edge(interp, specialize_method(match))
         vinfo = InvokeCallInfo(edge, match, nothing, types)
     end
     info = VirtualMethodMatchInfo(vinfo)
     return CallMeta(rt, Union{}, EFFECTS_TOTAL, info)
-end
-
-# allocate a dummy `edge::CodeInstance` to be added by `add_edges!`
-function codeinstance_for_method_match_edge(interp::AbstractInterpreter, edge::MethodInstance)
-    return CodeInstance(edge, cache_owner(interp), Any, Any, nothing, nothing, zero(Int32),
-        get_inference_world(interp), get_inference_world(interp),
-        zero(UInt32), nothing, zero(UInt8), nothing, empty_edges)
 end
 
 # N.B.: typename maps type equivalence classes to a single value

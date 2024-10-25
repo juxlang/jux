@@ -91,21 +91,31 @@ There are two constructor available:
   for constant inference, with extended lattice information included in `result.argtypes`.
 """
 mutable struct InferenceResult
+    #=== constant fields ===#
     const linfo::MethodInstance
     const argtypes::Vector{Any}
     const overridden_by_const::Union{Nothing,BitVector}
-    result                   # extended lattice element if inferred, nothing otherwise
-    exc_result               # like `result`, but for the thrown value
-    src                      # ::Union{CodeInfo, IRCode, OptimizationState} if inferred copy is available, nothing otherwise
-    valid_worlds::WorldRange # if inference and optimization is finished
-    ipo_effects::Effects     # if inference is finished
-    effects::Effects         # if optimization is finished
+
+    #=== mutable fields ===#
+    result                            # extended lattice element if inferred, nothing otherwise
+    exc_result                        # like `result`, but for the thrown value
+    src                               # ::Union{CodeInfo, IRCode, OptimizationState} if inferred copy is available, nothing otherwise
+    valid_worlds::WorldRange          # if inference and optimization is finished
+    ipo_effects::Effects              # if inference is finished
+    effects::Effects                  # if optimization is finished
     analysis_results::AnalysisResults # AnalysisResults with e.g. result::ArgEscapeCache if optimized, otherwise NULL_ANALYSIS_RESULTS
-    is_src_volatile::Bool    # `src` has been cached globally as the compressed format already, allowing `src` to be used destructively
-    ci::CodeInstance         # CodeInstance if this result may be added to the cache
+    is_src_volatile::Bool             # `src` has been cached globally as the compressed format already, allowing `src` to be used destructively
+
+    #=== uninitialized fields ===#
+    ci_for_cache::CodeInstance        # CodeInstance if this result may be added to the cache
+    ci_as_edge::CodeInstance          # CodeInstance as the edge representing locally cached result
     function InferenceResult(mi::MethodInstance, argtypes::Vector{Any}, overridden_by_const::Union{Nothing,BitVector})
-        return new(mi, argtypes, overridden_by_const, nothing, nothing, nothing,
-            WorldRange(), Effects(), Effects(), NULL_ANALYSIS_RESULTS, false)
+        result = exc_result = src = nothing
+        valid_worlds = WorldRange()
+        ipo_effects = effects = Effects()
+        analysis_results = NULL_ANALYSIS_RESULTS
+        return new(mi, argtypes, overridden_by_const, result, exc_result, src,
+            valid_worlds, ipo_effects, effects, analysis_results, #=is_src_volatile=#false)
     end
 end
 function InferenceResult(mi::MethodInstance, 𝕃::AbstractLattice=fallback_lattice)
@@ -398,7 +408,6 @@ engine_reserve(interp::AbstractInterpreter, mi::MethodInstance) = engine_reserve
 engine_reserve(mi::MethodInstance, @nospecialize owner) = ccall(:jl_engine_reserve, Any, (Any, Any), mi, owner)::CodeInstance
 # engine_fulfill(::AbstractInterpreter, ci::CodeInstance, src::CodeInfo) = ccall(:jl_engine_fulfill, Cvoid, (Any, Any), ci, src) # currently the same as engine_reject, so just use that one
 engine_reject(::AbstractInterpreter, ci::CodeInstance) = ccall(:jl_engine_fulfill, Cvoid, (Any, Ptr{Cvoid}), ci, C_NULL)
-
 
 function already_inferred_quick_test end
 function lock_mi_inference end

@@ -106,9 +106,9 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(f),
                     mresult[], f.contents, this_arginfo, si, match, sv)
                 const_result = volatile_inf_result
                 if const_call_result !== nothing
-                    # TODO override the edge with the const-prop' edge
                     this_const_conditional = ignorelimited(const_call_result.rt)
                     this_const_rt = widenwrappedconditional(const_call_result.rt)
+                    const_edge = nothing
                     if this_const_rt ⊑ₚ this_rt
                         # As long as the const-prop result we have is not *worse* than
                         # what we found out on types, we'd like to use it. Even if the
@@ -119,9 +119,9 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(f),
                         # e.g. in cases when there are cycles but cached result is still accurate
                         this_conditional = this_const_conditional
                         this_rt = this_const_rt
-                        (; effects, const_result) = const_call_result
+                        (; effects, const_result, const_edge) = const_call_result
                     elseif is_better_effects(const_call_result.effects, effects)
-                        (; effects, const_result) = const_call_result
+                        (; effects, const_result, const_edge) = const_call_result
                     else
                         add_remark!(interp, sv, "[constprop] Discarded because the result was wider than inference")
                     end
@@ -129,9 +129,12 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(f),
                     # because consistent-cy does not apply to exceptions.
                     if const_call_result.exct ⋤ this_exct
                         this_exct = const_call_result.exct
-                        (; const_result) = const_call_result
+                        (; const_result, const_edge) = const_call_result
                     else
                         add_remark!(interp, sv, "[constprop] Discarded exception type because result was wider than inference")
+                    end
+                    if const_edge !== nothing
+                        edge = const_edge
                     end
                 end
 
@@ -820,11 +823,12 @@ struct ConstCallResult
     exct::Any
     const_result::ConstResult
     effects::Effects
+    const_edge::Union{Nothing,CodeInstance}
     function ConstCallResult(
         @nospecialize(rt), @nospecialize(exct),
-        const_result::ConstResult,
-        effects::Effects)
-        return new(rt, exct, const_result, effects)
+        const_result::ConstResult, effects::Effects,
+        const_edge::Union{Nothing,CodeInstance})
+        return new(rt, exct, const_result, effects, const_edge)
     end
 end
 
@@ -975,9 +979,11 @@ function concrete_eval_call(interp::AbstractInterpreter,
     catch e
         # The evaluation threw. By :consistent-cy, we're guaranteed this would have happened at runtime.
         # Howevever, at present, :consistency does not mandate the type of the exception
-        return ConstCallResult(Bottom, Any, ConcreteResult(edge, result.effects), result.effects)
+        concrete_result = ConcreteResult(edge, result.effects)
+        return ConstCallResult(Bottom, Any, concrete_result, result.effects, #=const_edge=#nothing)
     end
-    return ConstCallResult(Const(value), Union{}, ConcreteResult(edge, EFFECTS_TOTAL, value), EFFECTS_TOTAL)
+    concrete_result = ConcreteResult(edge, EFFECTS_TOTAL, value)
+    return ConstCallResult(Const(value), Bottom, concrete_result, EFFECTS_TOTAL, #=const_edge=#nothing)
 end
 
 # check if there is a cycle and duplicated inference of `mi`
@@ -1242,16 +1248,21 @@ function semi_concrete_eval_call(interp::AbstractInterpreter,
                     effects = Effects(effects; noub=ALWAYS_TRUE)
                 end
                 exct = refine_exception_type(result.exct, effects)
-                return ConstCallResult(rt, exct, SemiConcreteResult(codeinst, ir, effects, spec_info(irsv)), effects)
+                semi_concrete_result = SemiConcreteResult(codeinst, ir, effects, spec_info(irsv))
+                const_edge = nothing # TODO use the edges from irsv?
+                return ConstCallResult(rt, exct, semi_concrete_result, effects, const_edge)
             end
         end
     end
     return nothing
 end
 
-const_prop_result(inf_result::InferenceResult) =
-    ConstCallResult(inf_result.result, inf_result.exc_result, ConstPropResult(inf_result),
-                    inf_result.ipo_effects)
+function const_prop_result(inf_result::InferenceResult)
+    @assert isdefined(inf_result, :ci_as_edge) "InferenceResult without ci_as_edge"
+    const_prop_result = ConstPropResult(inf_result)
+    return ConstCallResult(inf_result.result, inf_result.exc_result, const_prop_result,
+                           inf_result.ipo_effects, inf_result.ci_as_edge)
+end
 
 # return cached result of constant analysis
 return_localcache_result(::AbstractInterpreter, inf_result::InferenceResult, ::AbsIntState) =
@@ -1264,7 +1275,7 @@ end
 
 function const_prop_call(interp::AbstractInterpreter,
     mi::MethodInstance, result::MethodCallResult, arginfo::ArgInfo, sv::AbsIntState,
-    concrete_eval_result::Union{Nothing, ConstCallResult}=nothing)
+    concrete_eval_result::Union{Nothing,ConstCallResult}=nothing)
     inf_cache = get_inference_cache(interp)
     𝕃ᵢ = typeinf_lattice(interp)
     forwarded_argtypes = compute_forwarded_argtypes(interp, arginfo, sv)
@@ -1312,6 +1323,7 @@ function const_prop_call(interp::AbstractInterpreter,
         pop!(callstack)
         return nothing
     end
+    inf_result.ci_as_edge = codeinst_as_edge(interp, mi, Core.svec(frame.edges...))
     @assert frame.frameid != 0 && frame.cycleid == frame.frameid
     @assert frame.parentid == sv.frameid
     @assert inf_result.result !== nothing
@@ -2209,12 +2221,15 @@ function abstract_invoke(interp::AbstractInterpreter, arginfo::ArgInfo, si::Stmt
             result, f, arginfo, si, match, sv, invokecall)
         const_result = volatile_inf_result
         if const_call_result !== nothing
-            # TODO override the edge with the const-prop' edge
+            const_edge = nothing
             if const_call_result.rt ⊑ rt
-                (; rt, effects, const_result) = const_call_result
+                (; rt, effects, const_result, const_edge) = const_call_result
             end
             if const_call_result.exct ⋤ exct
-                (; exct, const_result) = const_call_result
+                (; exct, const_result, const_edge) = const_call_result
+            end
+            if const_edge !== nothing
+                edge = const_edge
             end
         end
         rt = from_interprocedural!(interp, rt, sv, arginfo, sig)
@@ -2423,12 +2438,15 @@ function abstract_call_opaque_closure(interp::AbstractInterpreter,
             const_call_result = abstract_call_method_with_const_args(interp, result,
                 #=f=#nothing, arginfo, si, match, sv)
             if const_call_result !== nothing
-                # TODO override the edge with the const-prop' edge
+                const_edge = nothing
                 if const_call_result.rt ⊑ rt
-                    (; rt, effects, const_result) = const_call_result
+                    (; rt, effects, const_result, const_edge) = const_call_result
                 end
                 if const_call_result.exct ⋤ exct
-                    (; exct, const_result) = const_call_result
+                    (; exct, const_result, const_edge) = const_call_result
+                end
+                if const_edge !== nothing
+                    edge = const_edge
                 end
             end
         end

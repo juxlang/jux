@@ -105,12 +105,9 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
         # but our caller might, so let's just make it anyways
         store_backedges(result, caller.edges)
     end
-    if isdefined(result, :ci)
-        ci = result.ci
+    if isdefined(result, :ci_for_cache)
+        ci = result.ci_for_cache
         inferred_result = nothing
-        # don't add backedges to toplevel method instance
-        istoplevel = caller.linfo.def isa Method
-        edges = istoplevel ? empty_edges : Core.svec(caller.edges...)
         relocatability = 0x1
         const_flag = is_result_constabi_eligible(result)
         if !can_discard_trees || (is_cached(caller) && !const_flag)
@@ -136,11 +133,13 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
         if !@isdefined di
             di = DebugInfo(result.linfo)
         end
+        istoplevel = caller.linfo.def isa Method # don't add backedges to toplevel method instance
+        edges = istoplevel ? empty_edges : Core.svec(caller.edges...)
+        min_world, max_world = first(valid_worlds), last(valid_worlds)
+        effects_bits = encode_effects(result.ipo_effects)
         ccall(:jl_update_codeinst, Cvoid, (Any, Any, Int32, UInt, UInt, UInt32, Any, UInt8, Any, Any),
-                ci, inferred_result, const_flag,
-                first(result.valid_worlds), last(result.valid_worlds),
-                encode_effects(result.ipo_effects), result.analysis_results,
-                relocatability, di, edges)
+            ci, inferred_result, const_flag, min_world, max_world, effects_bits,
+            result.analysis_results, relocatability, di, edges)
         engine_reject(interp, ci)
     end
     return nothing
@@ -242,13 +241,13 @@ function maybe_compress_codeinfo(interp::AbstractInterpreter, mi::MethodInstance
     end
 end
 
-function cache_result!(interp::AbstractInterpreter, result::InferenceResult)
+function cache_result!(interp::AbstractInterpreter, result::InferenceResult, ci_for_cache::CodeInstance)
     if last(result.valid_worlds) == get_world_counter()
         # if we've successfully recorded all of the backedges in the global reverse-cache,
         # we can now widen our applicability in the global cache too
         result.valid_worlds = WorldRange(first(result.valid_worlds), typemax(UInt))
     end
-    @assert isdefined(result.ci, :inferred)
+    @assert isdefined(ci_for_cache, :inferred)
     # check if the existing linfo metadata is also sufficient to describe the current inference result
     # to decide if it is worth caching this right now
     mi = result.linfo
@@ -259,7 +258,7 @@ function cache_result!(interp::AbstractInterpreter, result::InferenceResult)
         @assert isdefined(ci, :inferred)
         return false
     end
-    code_cache(interp)[mi] = result.ci
+    code_cache(interp)[mi] = ci_for_cache
     return true
 end
 
@@ -451,7 +450,7 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
     maybe_validate_code(me.linfo, me.src, "inferred")
 
     # finish populating inference results into the CodeInstance if possible, and maybe cache that globally for use elsewhere
-    if isdefined(result, :ci) && !limited_ret
+    if isdefined(result, :ci_for_cache) && !limited_ret
         result_type = result.result
         @assert !(result_type === nothing || result_type isa LimitedAccuracy)
         if isa(result_type, Const)
@@ -478,13 +477,17 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
         end
         relocatability = 0x0
         di = nothing
-        edges = istoplevel ? empty_edges : Core.svec(me.edges...)
+        edges = empty_edges # `edges` will be updated within `finish!`
+        ci_for_cache = result.ci_for_cache
+        rettype = widenconst(result_type)
+        exctype = widenconst(result.exc_result)
+        min_world, max_world = first(result.valid_worlds), last(result.valid_worlds)
+        effects_bits = encode_effects(result.ipo_effects)
         ccall(:jl_fill_codeinst, Cvoid, (Any, Any, Any, Any, Int32, UInt, UInt, UInt32, Any, Any, Any),
-                result.ci, widenconst(result_type), widenconst(result.exc_result), rettype_const, const_flags,
-                first(result.valid_worlds), last(result.valid_worlds),
-                encode_effects(result.ipo_effects), result.analysis_results, di, edges)
+            ci_for_cache, rettype, exctype, rettype_const, const_flags,
+            min_world, max_world, effects_bits, result.analysis_results, di, edges)
         if is_cached(me)
-            cached_result = cache_result!(me.interp, me.result)
+            cached_result = cache_result!(me.interp, result, ci_for_cache)
             if !cached_result
                 me.cache_mode = CACHE_MODE_NULL
             end
@@ -732,6 +735,15 @@ function MethodCallResult(::AbstractInterpreter, sv::AbsIntState, method::Method
     return MethodCallResult(rt, exct, effects, edge, edgecycle, edgelimited, volatile_inf_result)
 end
 
+# allocate a dummy `edge::CodeInstance` to be added by `add_edges!`
+function codeinst_as_edge(interp::AbstractInterpreter, edge::MethodInstance, edges::SimpleVector)
+    return CodeInstance(edge, cache_owner(interp), Any, Any, nothing, nothing, zero(Int32),
+        get_inference_world(interp), get_inference_world(interp),
+        zero(UInt32), nothing, zero(UInt8), nothing, edges)
+end
+codeinst_as_method_match_edge(interp::AbstractInterpreter, edge::MethodInstance) =
+    codeinst_as_edge(interp, edge, empty_edges)
+
 # compute (and cache) an inferred AST and return the current best estimate of the result type
 function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize(atype), sparams::SimpleVector, caller::AbsIntState, edgecycle::Bool, edgelimited::Bool)
     mi = specialize_method(method, atype, sparams)
@@ -764,7 +776,8 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     end
     if frame === false
         # completely new, but check again after reserving in the engine
-        ci_from_engine = cache_mode == CACHE_MODE_GLOBAL ? engine_reserve(interp, mi) : nothing
+        edge_ci = ci_from_engine = cache_mode == CACHE_MODE_GLOBAL ?
+            engine_reserve(interp, mi) : nothing
         if ci_from_engine !== nothing
             codeinst = get(code_cache(interp), mi, nothing)
             if codeinst isa CodeInstance # return existing rettype if the code is already inferred
@@ -773,6 +786,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                 inferred = @atomic :monotonic codeinst.inferred
                 if inferred === nothing && force_inline
                     cache_mode = CACHE_MODE_VOLATILE
+                    edge_ci = codeinst
                 else
                     @assert codeinst.def === mi "MethodInstance for cached edge does not match"
                     return return_cached_result(interp, method, codeinst, caller, edgecycle, edgelimited)
@@ -781,7 +795,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
         end
         result = InferenceResult(mi, typeinf_lattice(interp))
         if ci_from_engine !== nothing
-            result.ci = ci_from_engine
+            result.ci_for_cache = ci_from_engine
         end
         frame = InferenceState(result, cache_mode, interp) # always use the cache for edge targets
         if frame === nothing
@@ -799,8 +813,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
             push!(caller.tasks, function get_infer_result(interp, caller)
                 update_valid_age!(caller, frame.valid_worlds)
                 local isinferred = is_inferred(frame)
-                # TODO allocate an edge when isinferred && ci_from_engine === nothing (i.e. cache_mode === CACHE_MODE_LOCAL)
-                local edge = isinferred ? ci_from_engine : nothing
+                local edge = isinferred ? edge_ci : nothing
                 local effects = isinferred ? frame.result.ipo_effects : # effects are adjusted already within `finish` for ipo_effects
                     adjust_effects(effects_for_cycle(frame.ipo_effects), method)
                 local bestguess = frame.bestguess
@@ -1075,7 +1088,7 @@ function typeinf_ext(interp::AbstractInterpreter, mi::MethodInstance, source_mod
         end
     end
     result = InferenceResult(mi, typeinf_lattice(interp))
-    result.ci = ci
+    result.ci_for_cache = ci
     frame = InferenceState(result, #=cache_mode=#:global, interp)
     if frame === nothing
         engine_reject(interp, ci)
@@ -1084,7 +1097,7 @@ function typeinf_ext(interp::AbstractInterpreter, mi::MethodInstance, source_mod
     typeinf(interp, frame)
     ccall(:jl_typeinf_timing_end, Cvoid, (UInt64,), start_time)
 
-    ci = result.ci # reload from result in case it changed
+    ci = result.ci_for_cache # reload from result in case it changed
     if source_mode == SOURCE_MODE_ABI && frame.cache_mode != CACHE_MODE_GLOBAL
         # XXX: jl_type_infer somewhat ambiguously assumes this must be cached, while jl_ci_cache_lookup sort of ambiguously re-caches it
         # XXX: this should be using the CI from the cache, if possible instead: haskey(cache, mi) && (ci = cache[mi])
@@ -1137,7 +1150,7 @@ function typeinf_type(interp::AbstractInterpreter, mi::MethodInstance)
         end
     end
     result = InferenceResult(mi, typeinf_lattice(interp))
-    result.ci = ci
+    result.ci_for_cache = ci
     frame = InferenceState(result, #=cache_mode=#:global, interp)
     if frame === nothing
         engine_reject(interp, ci)

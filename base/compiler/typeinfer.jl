@@ -134,7 +134,13 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
             di = DebugInfo(result.linfo)
         end
         istoplevel = caller.linfo.def isa Method # don't add backedges to toplevel method instance
-        edges = istoplevel ? empty_edges : Core.svec(caller.edges...)
+        if istoplevel
+            edges = empty_edges
+        else
+            # TODO remove the next line once we make staticdata_utils.c able to handle `CodeInstance` edge directly
+            edges = Any[edge isa CodeInstance ? edge.def : edge for edge in caller.edges]
+            edges = Core.svec(edges...)
+        end
         min_world, max_world = first(valid_worlds), last(valid_worlds)
         effects_bits = encode_effects(result.ipo_effects)
         ccall(:jl_update_codeinst, Cvoid, (Any, Any, Int32, UInt, UInt, UInt32, Any, UInt8, Any, Any),
@@ -736,12 +742,15 @@ function MethodCallResult(::AbstractInterpreter, sv::AbsIntState, method::Method
 end
 
 # allocate a dummy `edge::CodeInstance` to be added by `add_edges!`
-function codeinst_as_edge(interp::AbstractInterpreter, edge::MethodInstance, edges::SimpleVector)
-    return CodeInstance(edge, cache_owner(interp), Any, Any, nothing, nothing, zero(Int32),
-        get_inference_world(interp), get_inference_world(interp),
-        zero(UInt32), nothing, zero(UInt8), nothing, edges)
+function codeinst_as_edge(edge::MethodInstance, edges::SimpleVector, @nospecialize(owner), min_world::UInt, max_world::UInt)
+    return CodeInstance(edge, owner, Any, Any, nothing, nothing, zero(Int32),
+        min_world, max_world, zero(UInt32), nothing, zero(UInt8), nothing, edges)
 end
-codeinst_as_method_match_edge(interp::AbstractInterpreter, edge::MethodInstance) =
+codeinst_as_edge(interp::AbstractInterpreter, edge::MethodInstance, edges::SimpleVector) =
+    codeinst_as_edge(edge, edges, cache_owner(interp), get_inference_world(interp), get_inference_world(interp))
+codeinst_as_invoke_edge(edge::MethodInstance, @nospecialize(owner), min_world::UInt, max_world::UInt) =
+    codeinst_as_edge(edge, empty_edges, owner, min_world, max_world)
+codeinst_as_invoke_edge(interp::AbstractInterpreter, edge::MethodInstance) =
     codeinst_as_edge(interp, edge, empty_edges)
 
 # compute (and cache) an inferred AST and return the current best estimate of the result type
@@ -749,6 +758,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     mi = specialize_method(method, atype, sparams)
     cache_mode = CACHE_MODE_GLOBAL # cache edge targets globally by default
     force_inline = is_stmt_inline(get_curr_ssaflag(caller))
+    edge_ci = nothing
     let codeinst = get(code_cache(interp), mi, nothing)
         if codeinst isa CodeInstance # return existing rettype if the code is already inferred
             inferred = @atomic :monotonic codeinst.inferred
@@ -757,6 +767,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                 # nevertheless we re-infer it here again in order to propagate the re-inferred
                 # source to the inliner as a volatile result
                 cache_mode = CACHE_MODE_VOLATILE
+                edge_ci = codeinst
             else
                 @assert codeinst.def === mi "MethodInstance for cached edge does not match"
                 return return_cached_result(interp, method, codeinst, caller, edgecycle, edgelimited)
@@ -776,9 +787,9 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     end
     if frame === false
         # completely new, but check again after reserving in the engine
-        edge_ci = ci_from_engine = cache_mode == CACHE_MODE_GLOBAL ?
-            engine_reserve(interp, mi) : nothing
-        if ci_from_engine !== nothing
+        if cache_mode == CACHE_MODE_GLOBAL
+            ci_from_engine = engine_reserve(interp, mi)
+            edge_ci = ci_from_engine
             codeinst = get(code_cache(interp), mi, nothing)
             if codeinst isa CodeInstance # return existing rettype if the code is already inferred
                 engine_reject(interp, ci_from_engine)
@@ -792,6 +803,8 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                     return return_cached_result(interp, method, codeinst, caller, edgecycle, edgelimited)
                 end
             end
+        else
+            ci_from_engine = nothing
         end
         result = InferenceResult(mi, typeinf_lattice(interp))
         if ci_from_engine !== nothing
@@ -820,7 +833,10 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                 local exc_bestguess = refine_exception_type(frame.exc_bestguess, effects)
                 # propagate newly inferred source to the inliner, allowing efficient inlining w/o deserialization:
                 # note that this result is cached globally exclusively, so we can use this local result destructively
-                local volatile_inf_result = isinferred ? VolatileInferenceResult(result) : nothing
+                local volatile_inf_result = if isinferred && edge_ci isa CodeInstance
+                    result.ci_as_edge = edge_ci # set the edge for the inliner usage
+                    VolatileInferenceResult(result)
+                else nothing end
                 mresult[] = MethodCallResult(interp, caller, method, bestguess, exc_bestguess, effects,
                     edge, edgecycle, edgelimited, volatile_inf_result)
                 return true

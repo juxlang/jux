@@ -66,7 +66,7 @@ function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
             # if this doesn't succeed, the backedge will be less precise,
             # but the forward edge will maintain the precision
             if edge.def.specTypes === info.results[1].spec_types
-                add_one_edge!(edges, edge.def) # TODO CodeInstance as edge
+                add_one_edge!(edges, edge)
                 return nothing
             end
         end
@@ -81,18 +81,20 @@ function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
     for i = 1:nmatches
         edge = info.edges[i]
         if edge !== nothing
-            push!(edges, edge.def) # TODO CodeInstance as edge
+            push!(edges, edge)
         end
     end
     nothing
 end
-function add_one_edge!(edges::Vector{Any}, mi::MethodInstance)
+function add_one_edge!(edges::Vector{Any}, edge::CodeInstance)
     for i in 1:length(edges)
-        if edges[i] === mi && !(i > 1 && edges[i-1] isa Type)
+        edgeᵢ = edges[i]
+        # XXX compare `CodeInstance` identify?
+        if edgeᵢ isa CodeInstance && edgeᵢ.def === edge.def && !(i > 1 && edges[i-1] isa Type)
             return
         end
     end
-    push!(edges, mi)
+    push!(edges, edge)
     nothing
 end
 nsplit_impl(info::MethodMatchInfo) = 1
@@ -264,19 +266,21 @@ end
 function add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo)
     edge = info.edge
     if edge !== nothing
-        add_invoke_edge!(edges, info.atype, edge.def) # TODO CodeInstance as edge
+        add_invoke_edge!(edges, info.atype, edge)
     end
+    nothing
 end
-function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), mi::MethodInstance)
+function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::CodeInstance)
     for i in 2:length(edges)
-        if edges[i] === mi
+        edgeᵢ = edges[i]
+        if edgeᵢ isa CodeInstance && edgeᵢ.def === edge.def # XXX compare `CodeInstance` identify?
             edge_minus_1 = edges[i-1]
             if edge_minus_1 isa Type && edge_minus_1 == atype
                 return nothing
             end
         end
     end
-    push!(edges, atype, mi)
+    push!(edges, atype, edge)
     nothing
 end
 
@@ -295,7 +299,7 @@ end
 function add_edges_impl(edges::Vector{Any}, info::OpaqueClosureCallInfo)
     edge = info.edge
     if edge !== nothing
-        add_one_edge!(edges, edge.def) # TODO CodeInstance as edge
+        add_one_edge!(edges, edge)
     end
 end
 

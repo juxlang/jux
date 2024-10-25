@@ -89,7 +89,8 @@ module MiniCassette
         @assert isa(src, CodeInfo)
         src = copy(src)
         @assert src.edges === Core.svec()
-        src.edges = MethodInstance[mi]
+        self_edge = Core.Compiler.codeinst_as_invoke_edge(mi, #=owner=#nothing, world, world)
+        src.edges = CodeInstance[self_edge]
         transform!(mi, src, length(args), match.sparams)
         # TODO: this is mandatory: code_info.min_world = max(code_info.min_world, min_world[])
         # TODO: this is mandatory: code_info.max_world = min(code_info.max_world, max_world[])

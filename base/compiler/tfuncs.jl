@@ -1432,7 +1432,7 @@ end
         return Future{CallMeta}(callinfo, interp, sv) do callinfo, interp, sv
             TF = TF.contents
             RT = RT.contents
-            TF2 = tmeet(callinfo.rt, widenconst(TF))
+            TF2 = tmeet(ipo_lattice(interp), callinfo.rt, widenconst(TF))
             if TF2 === Bottom
                 RT = Bottom
             elseif isconcretetype(RT) && has_nontrivial_extended_info(𝕃ᵢ, TF2) # isconcrete condition required to form a PartialStruct
@@ -3012,7 +3012,7 @@ function abstract_applicable(interp::AbstractInterpreter, argtypes::Vector{Any},
         if rt !== Bool
             for i = 1:napplicable
                 (; match, edges, edge_idx) = applicable[i]
-                edges[edge_idx] = codeinst_as_method_match_edge(interp, specialize_method(match))
+                edges[edge_idx] = codeinst_as_invoke_edge(interp, specialize_method(match))
             end
             info = VirtualMethodMatchInfo(matches.info)
         end
@@ -3055,7 +3055,7 @@ function _hasmethod_tfunc(interp::AbstractInterpreter, argtypes::Vector{Any}, sv
         vinfo = MethodMatchInfo(vresults, mt, types, false) # XXX: this should actually be an info with invoke-type edge
     else
         rt = Const(true)
-        edge = codeinst_as_method_match_edge(interp, specialize_method(match))
+        edge = codeinst_as_invoke_edge(interp, specialize_method(match))
         vinfo = InvokeCallInfo(edge, match, nothing, types)
     end
     info = VirtualMethodMatchInfo(vinfo)

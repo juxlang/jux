@@ -264,9 +264,9 @@ function iterate(iter::BackedgeIterator, i::Int=1)
         i > length(backedges) && return nothing
         item = backedges[i]
         item isa Int && (i += 2; continue) # ignore the query information if present
-        isa(item, MethodInstance) && return BackedgePair(nothing, item), i+1      # regular dispatch
+        isa(item, CodeInstance) && return BackedgePair(nothing, item.def), i+1    # regular dispatch
         isa(item, MethodTable) && return BackedgePair(backedges[i+1], item), i+2  # abstract dispatch
-        return BackedgePair(item, backedges[i+1]::MethodInstance), i+2            # `invoke` calls
+        return BackedgePair(item, (backedges[i+1]::CodeInstance).def), i+2        # `invoke` calls
     end
 end
 

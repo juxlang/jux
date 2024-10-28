@@ -548,9 +548,6 @@ typedef struct {
     jl_array_t *link_ids_gvars;
     jl_array_t *link_ids_external_fnvars;
     jl_ptls_t ptls;
-    // Set (implemented has a hasmap of MethodInstances to themselves) of which MethodInstances have (forward) edges
-    // to other MethodInstances.
-    htable_t callers_with_edges;
     jl_image_t *image;
     int8_t incremental;
 } jl_serializer_state;
@@ -1767,6 +1764,7 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                 if (s->incremental) {
                     if (jl_atomic_load_relaxed(&ci->max_world) == ~(size_t)0) {
                         if (jl_atomic_load_relaxed(&newci->min_world) > 1) {
+                            //assert(ci->edges != jl_emptysvec); // some code (such as !==) might add a method lookup restriction but not keep the edges
                             jl_atomic_store_release(&newci->min_world, ~(size_t)0);
                             jl_atomic_store_release(&newci->max_world, WORLD_AGE_REVALIDATION_SENTINEL);
                             arraylist_push(&s->fixup_objs, (void*)reloc_offset);
@@ -2828,13 +2826,12 @@ static void jl_prepare_serialization_data(jl_array_t *mod_array, jl_array_t *new
 
     if (edges) {
         size_t world = jl_atomic_load_acquire(&jl_world_counter);
-        // jl_collect_extext_methods_from_mod accumulate data in callers_with_edges.
-        // Process this to extract `new_ext_cis` and `edges`
+        // Extract `new_ext_cis` and `edges` now (from info prepared by jl_collect_methcache_from_mod)
         *method_roots_list = jl_alloc_vec_any(0);
         // Collect the new method roots for external specializations
         jl_collect_new_roots(&relocatable_ext_cis, *method_roots_list, *new_ext_cis, worklist_key);
         *edges = jl_alloc_vec_any(0);
-        jl_collect_edges(*edges, *new_ext_cis, world);
+        jl_collect_internal_cis(*edges, world);
     }
     internal_methods = NULL;
 
@@ -2965,7 +2962,6 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     s.link_ids_gctags = jl_alloc_array_1d(jl_array_int32_type, 0);
     s.link_ids_gvars = jl_alloc_array_1d(jl_array_int32_type, 0);
     s.link_ids_external_fnvars = jl_alloc_array_1d(jl_array_int32_type, 0);
-    htable_new(&s.callers_with_edges, 0);
     jl_value_t **const*const tags = get_tags(); // worklist == NULL ? get_tags() : NULL;
 
 
@@ -3005,8 +3001,6 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             // Queue the worklist itself as the first item we serialize
             jl_queue_for_serialization(&s, worklist);
             jl_queue_for_serialization(&s, jl_module_init_order);
-            // Classify the CodeInstances with respect to their need for validation
-            classify_callers(&s.callers_with_edges, edges);
         }
         // step 1.1: as needed, serialize the data needed for insertion into the running system
         if (extext_methods) {
@@ -3108,7 +3102,6 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         );
         jl_exit(1);
     }
-    htable_free(&s.callers_with_edges);
 
     // step 3: combine all of the sections into one file
     assert(ios_pos(f) % JL_CACHE_BYTE_ALIGNMENT == 0);

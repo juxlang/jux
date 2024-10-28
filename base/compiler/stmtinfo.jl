@@ -60,38 +60,69 @@ function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
     end
     nmatches = length(info.results)
     if nmatches == length(info.edges) == 1
+        # try the optimized format for the representation, if possible and applicable
+        # if this doesn't succeed, the backedge will be less precise,
+        # but the forward edge will maintain the precision
         edge = info.edges[1]
-        if edge !== nothing
-            # try the optimized format for the representation, if possible and applicable
-            # if this doesn't succeed, the backedge will be less precise,
-            # but the forward edge will maintain the precision
-            if edge.def.specTypes === info.results[1].spec_types
-                add_one_edge!(edges, edge)
-                return nothing
-            end
+        m = info.results[1]
+        if edge === nothing
+            mi = specialize_method(m)
+            edge = mi
+        else
+            mi = edge.def
+        end
+        if mi.specTypes === m.spec_types
+            add_one_edge!(edges, edge)
+            return nothing
         end
     end
     # add check for whether this lookup already existed in the edges list
     for i in 1:length(edges)
         if edges[i] === nmatches && edges[i+1] == info.atype
+            # TODO: must also verify the CodeInstance match too
             return nothing
         end
     end
     push!(edges, nmatches, info.atype)
     for i = 1:nmatches
         edge = info.edges[i]
-        if edge !== nothing
+        m = info.results[i]
+        if edge === nothing
+            # push!(edges, m.method)
+            mi = specialize_method(m)
+            push!(edges, mi)
+        else
+            @assert edge.def.def === m.method
             push!(edges, edge)
         end
     end
     nothing
 end
+function add_one_edge!(edges::Vector{Any}, edge::MethodInstance)
+    for i in 1:length(edges)
+        edgeᵢ = edges[i]
+        edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
+        edgeᵢ isa MethodInstance || continue
+        if edgeᵢ === edge && !(i > 1 && edges[i-1] isa Type)
+            return # found existing covered edge
+        end
+    end
+    push!(edges, edge)
+    nothing
+end
 function add_one_edge!(edges::Vector{Any}, edge::CodeInstance)
     for i in 1:length(edges)
         edgeᵢ = edges[i]
-        # XXX compare `CodeInstance` identify?
-        if edgeᵢ isa CodeInstance && edgeᵢ.def === edge.def && !(i > 1 && edges[i-1] isa Type)
-            return
+        edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
+        edgeᵢ isa MethodInstance || continue
+        if edgeᵢ === edge.def && !(i > 1 && edges[i-1] isa Type)
+            if edges[i] isa MethodInstance
+                # found edge we can upgrade
+                edges[i] = edge
+                return
+            elseif true # XXX compare `CodeInstance` identify?
+                return
+            end
         end
     end
     push!(edges, edge)
@@ -301,6 +332,7 @@ function add_edges_impl(edges::Vector{Any}, info::OpaqueClosureCallInfo)
     if edge !== nothing
         add_one_edge!(edges, edge)
     end
+    nothing
 end
 
 """

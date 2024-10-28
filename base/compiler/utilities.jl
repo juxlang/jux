@@ -264,9 +264,13 @@ function iterate(iter::BackedgeIterator, i::Int=1)
         i > length(backedges) && return nothing
         item = backedges[i]
         item isa Int && (i += 2; continue) # ignore the query information if present
-        isa(item, CodeInstance) && return BackedgePair(nothing, item.def), i+1    # regular dispatch
-        isa(item, MethodTable) && return BackedgePair(backedges[i+1], item), i+2  # abstract dispatch
-        return BackedgePair(item, (backedges[i+1]::CodeInstance).def), i+2        # `invoke` calls
+        isa(item, MethodInstance) && (i += 1; continue) # ignore edges which don't contribute info (future style edges)
+        isa(item, CodeInstance) && (item = item.def)
+        isa(item, MethodInstance) && return BackedgePair(nothing, item), i+1      # regular dispatch
+        isa(item, MethodTable) && return BackedgePair(backedges[i+1], item), i+2  # abstract dispatch (legacy style edges)
+        target = backedges[i+1]
+        isa(target, CodeInstance) && (target = target.def)
+        return BackedgePair(item, target::MethodInstance), i+2                    # `invoke` calls
     end
 end
 

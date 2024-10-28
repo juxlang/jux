@@ -532,6 +532,8 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
         uint8_t relocatability,
         jl_debuginfo_t *di, jl_svec_t *edges /*, int absolute_max*/)
 {
+    assert(min_world <= max_world && "attempting to set invalid world constraints");
+    assert((!(jl_is_method(mi->def.value) && max_world == ~(size_t)0 && min_world > 1) || edges == NULL || jl_svec_len(edges) != 0) && "missing edges");
     jl_task_t *ct = jl_current_task;
     assert(min_world <= max_world && "attempting to set invalid world constraints");
     jl_code_instance_t *codeinst = (jl_code_instance_t*)jl_gc_alloc(ct->ptls, sizeof(jl_code_instance_t),
@@ -569,6 +571,8 @@ JL_DLLEXPORT void jl_update_codeinst(
         uint32_t effects, jl_value_t *analysis_results,
         uint8_t relocatability, jl_debuginfo_t *di, jl_svec_t *edges /* , int absolute_max*/)
 {
+    assert(min_world <= max_world && "attempting to set invalid world constraints");
+    //assert((!jl_is_method(codeinst->def->def.value) || max_world != ~(size_t)0 || min_world <= 1 || jl_svec_len(edges) != 0) && "missing edges");
     codeinst->relocatability = relocatability;
     codeinst->analysis_results = analysis_results;
     jl_gc_wb(codeinst, analysis_results);
@@ -596,6 +600,7 @@ JL_DLLEXPORT void jl_fill_codeinst(
         jl_debuginfo_t *di, jl_svec_t *edges /* , int absolute_max*/)
 {
     assert(min_world <= max_world && "attempting to set invalid world constraints");
+    assert((!jl_is_method(codeinst->def->def.value) || max_world != ~(size_t)0 || min_world <= 1 || jl_svec_len(edges) != 0) && "missing edges");
     codeinst->rettype = rettype;
     jl_gc_wb(codeinst, rettype);
     codeinst->exctype = exctype;

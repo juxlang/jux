@@ -133,14 +133,7 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
         if !@isdefined di
             di = DebugInfo(result.linfo)
         end
-        istoplevel = !(caller.linfo.def isa Method) # don't add backedges to toplevel method instance
-        if istoplevel
-            edges = empty_edges
-        else
-            # TODO remove the next line once we make staticdata_utils.c able to handle `CodeInstance` edge directly
-            edges = Any[edge isa CodeInstance ? edge.def : edge for edge in caller.edges]
-            edges = Core.svec(edges...)
-        end
+        edges = Core.svec(caller.edges...)
         min_world, max_world = first(valid_worlds), last(valid_worlds)
         effects_bits = encode_effects(result.ipo_effects)
         ccall(:jl_update_codeinst, Cvoid, (Any, Any, Int32, UInt, UInt, UInt32, Any, UInt8, Any, Any),

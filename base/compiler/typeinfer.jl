@@ -133,7 +133,7 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
         if !@isdefined di
             di = DebugInfo(result.linfo)
         end
-        istoplevel = caller.linfo.def isa Method # don't add backedges to toplevel method instance
+        istoplevel = !(caller.linfo.def isa Method) # don't add backedges to toplevel method instance
         if istoplevel
             edges = empty_edges
         else
@@ -422,8 +422,8 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
     me.src.rettype = widenconst(ignorelimited(bestguess))
     me.src.min_world = first(me.valid_worlds)
     me.src.max_world = last(me.valid_worlds)
-    istoplevel = me.linfo.def isa Method
-    istoplevel && compute_edges!(me) # don't add backedges to toplevel method instance
+    istoplevel = !(me.linfo.def isa Method)
+    istoplevel || compute_edges!(me) # don't add backedges to toplevel method instance
 
     if limited_ret
         # a parent may be cached still, but not this intermediate work:

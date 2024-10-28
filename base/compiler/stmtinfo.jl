@@ -296,18 +296,44 @@ struct InvokeCallInfo <: CallInfo
 end
 function add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo)
     edge = info.edge
-    if edge !== nothing
+    if edge === nothing
+        mi = specialize_method(info.match)
+        add_invoke_edge!(edges, info.atype, mi)
+    else
         add_invoke_edge!(edges, info.atype, edge)
     end
+    nothing
+end
+function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::MethodInstance)
+    for i in 2:length(edges)
+        edgeᵢ = edges[i]
+        edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
+        edgeᵢ isa MethodInstance || continue
+        if edgeᵢ === edge
+            edge_minus_1 = edges[i-1]
+            if edge_minus_1 isa Type && edge_minus_1 == atype
+                return # found existing covered edge
+            end
+        end
+    end
+    push!(edges, atype, edge)
     nothing
 end
 function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::CodeInstance)
     for i in 2:length(edges)
         edgeᵢ = edges[i]
-        if edgeᵢ isa CodeInstance && edgeᵢ.def === edge.def # XXX compare `CodeInstance` identify?
+        edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
+        edgeᵢ isa MethodInstance || continue
+        if edgeᵢ === edge.def
             edge_minus_1 = edges[i-1]
             if edge_minus_1 isa Type && edge_minus_1 == atype
-                return nothing
+                if edges[i] isa MethodInstance
+                    # found edge we can upgrade
+                    edges[i] = edge
+                    return
+                elseif true # XXX compare `CodeInstance` identify?
+                    return
+                end
             end
         end
     end

@@ -1323,7 +1323,7 @@ function const_prop_call(interp::AbstractInterpreter,
         pop!(callstack)
         return nothing
     end
-    inf_result.ci_as_edge = codeinst_as_edge(interp, mi, Core.svec(frame.edges...))
+    inf_result.ci_as_edge = codeinst_as_edge(interp, frame)
     @assert frame.frameid != 0 && frame.cycleid == frame.frameid
     @assert frame.parentid == sv.frameid
     @assert inf_result.result !== nothing

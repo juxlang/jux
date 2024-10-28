@@ -739,12 +739,8 @@ function codeinst_as_edge(edge::MethodInstance, edges::SimpleVector, @nospeciali
     return CodeInstance(edge, owner, Any, Any, nothing, nothing, zero(Int32),
         min_world, max_world, zero(UInt32), nothing, zero(UInt8), nothing, edges)
 end
-codeinst_as_edge(interp::AbstractInterpreter, edge::MethodInstance, edges::SimpleVector) =
-    codeinst_as_edge(edge, edges, cache_owner(interp), get_inference_world(interp), get_inference_world(interp))
-codeinst_as_invoke_edge(edge::MethodInstance, @nospecialize(owner), min_world::UInt, max_world::UInt) =
-    codeinst_as_edge(edge, empty_edges, owner, min_world, max_world)
-codeinst_as_invoke_edge(interp::AbstractInterpreter, edge::MethodInstance) =
-    codeinst_as_edge(interp, edge, empty_edges)
+codeinst_as_edge(interp::AbstractInterpreter, sv::InferenceState) =
+    codeinst_as_edge(sv.linfo, Core.svec(sv.edges...), cache_owner(interp), first(sv.valid_worlds), last(sv.valid_worlds))
 
 # compute (and cache) an inferred AST and return the current best estimate of the result type
 function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize(atype), sparams::SimpleVector, caller::AbsIntState, edgecycle::Bool, edgelimited::Bool)

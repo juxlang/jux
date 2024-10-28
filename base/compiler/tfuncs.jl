@@ -3010,10 +3010,6 @@ function abstract_applicable(interp::AbstractInterpreter, argtypes::Vector{Any},
             rt = Const(true) # has applicable matches
         end
         if rt !== Bool
-            for i = 1:napplicable
-                (; match, edges, edge_idx) = applicable[i]
-                edges[edge_idx] = codeinst_as_invoke_edge(interp, specialize_method(match))
-            end
             info = VirtualMethodMatchInfo(matches.info)
         end
     end
@@ -3055,8 +3051,7 @@ function _hasmethod_tfunc(interp::AbstractInterpreter, argtypes::Vector{Any}, sv
         vinfo = MethodMatchInfo(vresults, mt, types, false) # XXX: this should actually be an info with invoke-type edge
     else
         rt = Const(true)
-        edge = codeinst_as_invoke_edge(interp, specialize_method(match))
-        vinfo = InvokeCallInfo(edge, match, nothing, types)
+        vinfo = InvokeCallInfo(nothing, match, nothing, types)
     end
     info = VirtualMethodMatchInfo(vinfo)
     return CallMeta(rt, Union{}, EFFECTS_TOTAL, info)

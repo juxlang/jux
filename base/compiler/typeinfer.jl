@@ -99,11 +99,20 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
     if opt isa OptimizationState
         result.src = ir_to_codeinf!(opt)
     end
-    valid_worlds = result.valid_worlds
-    if last(valid_worlds) >= get_world_counter()
+    # @assert last(result.valid_worlds) <= get_world_counter() || isempty(result.edges)
+    if isdefined(result, :ci_for_cache) || isdefined(result, :ci_as_edge)
         # if we aren't cached, we don't need this edge
         # but our caller might, so let's just make it anyways
-        store_backedges(result, caller.edges)
+        if last(result.valid_worlds) >= get_world_counter()
+            # TODO: this should probably come after all store_backedges (after optimizations) for the entire graph in finish_cycle
+            # since we should be requiring that all edges first get their backedges set, as a batch
+            result.valid_worlds = WorldRange(first(result.valid_worlds), typemax(UInt))
+        end
+        if last(result.valid_worlds) == typemax(UInt)
+            # if we can record all of the backedges in the global reverse-cache,
+            # we can now widen our applicability in the global cache too
+            store_backedges(result, caller.edges)
+        end
     end
     if isdefined(result, :ci_for_cache)
         ci = result.ci_for_cache
@@ -133,12 +142,9 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
         if !@isdefined di
             di = DebugInfo(result.linfo)
         end
-        edges = Core.svec(caller.edges...)
-        min_world, max_world = first(valid_worlds), last(valid_worlds)
-        effects_bits = encode_effects(result.ipo_effects)
         ccall(:jl_update_codeinst, Cvoid, (Any, Any, Int32, UInt, UInt, UInt32, Any, UInt8, Any, Any),
-            ci, inferred_result, const_flag, min_world, max_world, effects_bits,
-            result.analysis_results, relocatability, di, edges)
+            ci, inferred_result, const_flag, first(result.valid_worlds), last(result.valid_worlds), encode_effects(result.ipo_effects),
+            result.analysis_results, relocatability, di, Core.svec(caller.edges...))
         engine_reject(interp, ci)
     end
     return nothing
@@ -241,11 +247,6 @@ function maybe_compress_codeinfo(interp::AbstractInterpreter, mi::MethodInstance
 end
 
 function cache_result!(interp::AbstractInterpreter, result::InferenceResult, ci_for_cache::CodeInstance)
-    if last(result.valid_worlds) == get_world_counter()
-        # if we've successfully recorded all of the backedges in the global reverse-cache,
-        # we can now widen our applicability in the global cache too
-        result.valid_worlds = WorldRange(first(result.valid_worlds), typemax(UInt))
-    end
     @assert isdefined(ci_for_cache, :inferred)
     # check if the existing linfo metadata is also sufficient to describe the current inference result
     # to decide if it is worth caching this right now
@@ -478,13 +479,10 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
         di = nothing
         edges = empty_edges # `edges` will be updated within `finish!`
         ci_for_cache = result.ci_for_cache
-        rettype = widenconst(result_type)
-        exctype = widenconst(result.exc_result)
-        min_world, max_world = first(result.valid_worlds), last(result.valid_worlds)
-        effects_bits = encode_effects(result.ipo_effects)
         ccall(:jl_fill_codeinst, Cvoid, (Any, Any, Any, Any, Int32, UInt, UInt, UInt32, Any, Any, Any),
-            ci_for_cache, rettype, exctype, rettype_const, const_flags,
-            min_world, max_world, effects_bits, result.analysis_results, di, edges)
+            ci_for_cache, widenconst(result_type), widenconst(result.exc_result), rettype_const, const_flags,
+            first(result.valid_worlds), last(result.valid_worlds),
+            encode_effects(result.ipo_effects), result.analysis_results, di, edges)
         if is_cached(me)
             cached_result = cache_result!(me.interp, result, ci_for_cache)
             if !cached_result
@@ -496,9 +494,18 @@ function finishinfer!(me::InferenceState, interp::AbstractInterpreter)
 end
 
 # record the backedges
-store_backedges(caller::InferenceResult, edges::Vector{Any}) = store_backedges(caller.linfo, edges)
-function store_backedges(caller::MethodInstance, edges::Vector{Any})
-    isa(caller.def, Method) || return nothing # don't add backedges to toplevel method instance
+function store_backedges(caller::InferenceResult, edges::Vector{Any})
+    if isdefined(caller, :ci_for_cache)
+        store_backedges(caller.ci_for_cache, edges)
+    elseif isdefined(caller, :ci_as_edge)
+        store_backedges(caller.ci_as_edge, edges)
+    else
+        @assert false "InferenceResult without ci_as_edge"
+    end
+    nothing
+end
+function store_backedges(caller::CodeInstance, edges::Vector{Any})
+    isa(caller.def.def, Method) || return # don't add backedges to toplevel method instance
     for itr in BackedgeIterator(edges)
         callee = itr.caller
         if isa(callee, MethodInstance)
@@ -507,7 +514,7 @@ function store_backedges(caller::MethodInstance, edges::Vector{Any})
             ccall(:jl_method_table_add_backedge, Cvoid, (Any, Any, Any), callee, itr.sig, caller)
         end
     end
-    return nothing
+    nothing
 end
 
 function compute_edges!(sv::InferenceState)
@@ -828,7 +835,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                 local volatile_inf_result = if isinferred && edge_ci isa CodeInstance
                     result.ci_as_edge = edge_ci # set the edge for the inliner usage
                     VolatileInferenceResult(result)
-                else nothing end
+                end
                 mresult[] = MethodCallResult(interp, caller, method, bestguess, exc_bestguess, effects,
                     edge, edgecycle, edgelimited, volatile_inf_result)
                 return true

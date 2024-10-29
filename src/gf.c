@@ -1760,35 +1760,31 @@ JL_DLLEXPORT jl_value_t *jl_debug_method_invalidation(int state)
 static void _invalidate_backedges(jl_method_instance_t *replaced_mi, size_t max_world, int depth);
 
 // recursively invalidate cached methods that had an edge to a replaced method
-static void invalidate_method_instance(jl_method_instance_t *replaced, size_t max_world, int depth)
+static void invalidate_code_instance(jl_code_instance_t *replaced, size_t max_world, int depth)
 {
     jl_timing_counter_inc(JL_TIMING_COUNTER_Invalidations, 1);
     if (_jl_debug_method_invalidation) {
         jl_value_t *boxeddepth = NULL;
         JL_GC_PUSH1(&boxeddepth);
-        jl_array_ptr_1d_push(_jl_debug_method_invalidation, (jl_value_t*)replaced);
+        jl_array_ptr_1d_push(_jl_debug_method_invalidation, (jl_value_t*)replaced->def);
         boxeddepth = jl_box_int32(depth);
         jl_array_ptr_1d_push(_jl_debug_method_invalidation, boxeddepth);
         JL_GC_POP();
     }
-    //jl_static_show(JL_STDERR, (jl_value_t*)replaced);
-    if (!jl_is_method(replaced->def.method))
+    //jl_static_show(JL_STDERR, (jl_value_t*)replaced->def);
+    if (!jl_is_method(replaced->def->def.method))
         return; // shouldn't happen, but better to be safe
-    JL_LOCK(&replaced->def.method->writelock);
-    jl_code_instance_t *codeinst = jl_atomic_load_relaxed(&replaced->cache);
-    while (codeinst) {
-        if (jl_atomic_load_relaxed(&codeinst->max_world) == ~(size_t)0) {
-            assert(jl_atomic_load_relaxed(&codeinst->min_world) - 1 <= max_world && "attempting to set illogical world constraints (probable race condition)");
-            jl_atomic_store_release(&codeinst->max_world, max_world);
-        }
-        assert(jl_atomic_load_relaxed(&codeinst->max_world) <= max_world);
-        codeinst = jl_atomic_load_relaxed(&codeinst->next);
+    JL_LOCK(&replaced->def->def.method->writelock);
+    if (jl_atomic_load_relaxed(&replaced->max_world) == ~(size_t)0) {
+        assert(jl_atomic_load_relaxed(&replaced->min_world) - 1 <= max_world && "attempting to set illogical world constraints (probable race condition)");
+        jl_atomic_store_release(&replaced->max_world, max_world);
     }
+    assert(jl_atomic_load_relaxed(&replaced->max_world) <= max_world);
     JL_GC_PUSH1(&replaced);
     // recurse to all backedges to update their valid range also
-    _invalidate_backedges(replaced, max_world, depth + 1);
+    _invalidate_backedges(replaced->def, max_world, depth + 1);
     JL_GC_POP();
-    JL_UNLOCK(&replaced->def.method->writelock);
+    JL_UNLOCK(&replaced->def->def.method->writelock);
 }
 
 static void _invalidate_backedges(jl_method_instance_t *replaced_mi, size_t max_world, int depth) {
@@ -1798,10 +1794,10 @@ static void _invalidate_backedges(jl_method_instance_t *replaced_mi, size_t max_
         replaced_mi->backedges = NULL;
         JL_GC_PUSH1(&backedges);
         size_t i = 0, l = jl_array_nrows(backedges);
-        jl_method_instance_t *replaced;
+        jl_code_instance_t *replaced;
         while (i < l) {
             i = get_next_edge(backedges, i, NULL, &replaced);
-            invalidate_method_instance(replaced, max_world, depth);
+            invalidate_code_instance(replaced, max_world, depth);
         }
         JL_GC_POP();
     }
@@ -1823,12 +1819,12 @@ static void invalidate_backedges(jl_method_instance_t *replaced_mi, size_t max_w
 }
 
 // add a backedge from callee to caller
-JL_DLLEXPORT void jl_method_instance_add_backedge(jl_method_instance_t *callee, jl_value_t *invokesig, jl_method_instance_t *caller)
+JL_DLLEXPORT void jl_method_instance_add_backedge(jl_method_instance_t *callee, jl_value_t *invokesig, jl_code_instance_t *caller)
 {
     if (invokesig == jl_nothing)
         invokesig = NULL;      // julia uses `nothing` but C uses NULL (#undef)
     assert(jl_is_method_instance(callee));
-    assert(jl_is_method_instance(caller));
+    assert(jl_is_code_instance(caller));
     assert(invokesig == NULL || jl_is_type(invokesig));
     JL_LOCK(&callee->def.method->writelock);
     int found = 0;
@@ -1861,8 +1857,9 @@ JL_DLLEXPORT void jl_method_instance_add_backedge(jl_method_instance_t *callee, 
 }
 
 // add a backedge from a non-existent signature to caller
-JL_DLLEXPORT void jl_method_table_add_backedge(jl_methtable_t *mt, jl_value_t *typ, jl_value_t *caller)
+JL_DLLEXPORT void jl_method_table_add_backedge(jl_methtable_t *mt, jl_value_t *typ, jl_code_instance_t *caller)
 {
+    assert(jl_is_code_instance(caller));
     JL_LOCK(&mt->writelock);
     if (!mt->backedges) {
         // lazy-init the backedges array
@@ -1875,7 +1872,7 @@ JL_DLLEXPORT void jl_method_table_add_backedge(jl_methtable_t *mt, jl_value_t *t
         // check if the edge is already present and avoid adding a duplicate
         size_t i, l = jl_array_nrows(mt->backedges);
         for (i = 1; i < l; i += 2) {
-            if (jl_array_ptr_ref(mt->backedges, i) == caller) {
+            if (jl_array_ptr_ref(mt->backedges, i) == (jl_value_t*)caller) {
                 if (jl_types_equal(jl_array_ptr_ref(mt->backedges, i - 1), typ)) {
                     JL_UNLOCK(&mt->writelock);
                     return;
@@ -1885,7 +1882,7 @@ JL_DLLEXPORT void jl_method_table_add_backedge(jl_methtable_t *mt, jl_value_t *t
         // reuse an already cached instance of this type, if possible
         // TODO: use jl_cache_type_(tt) like cache_method does, instead of this linear scan?
         for (i = 1; i < l; i += 2) {
-            if (jl_array_ptr_ref(mt->backedges, i) != caller) {
+            if (jl_array_ptr_ref(mt->backedges, i) != (jl_value_t*)caller) {
                 if (jl_types_equal(jl_array_ptr_ref(mt->backedges, i - 1), typ)) {
                     typ = jl_array_ptr_ref(mt->backedges, i - 1);
                     break;
@@ -1893,7 +1890,7 @@ JL_DLLEXPORT void jl_method_table_add_backedge(jl_methtable_t *mt, jl_value_t *t
             }
         }
         jl_array_ptr_1d_push(mt->backedges, typ);
-        jl_array_ptr_1d_push(mt->backedges, caller);
+        jl_array_ptr_1d_push(mt->backedges, (jl_value_t*)caller);
     }
     JL_UNLOCK(&mt->writelock);
 }
@@ -2207,8 +2204,8 @@ void jl_method_table_activate(jl_methtable_t *mt, jl_typemap_entry_t *newentry)
                     }
                 }
                 if (missing) {
-                    jl_method_instance_t *backedge = (jl_method_instance_t*)backedges[i];
-                    invalidate_method_instance(backedge, max_world, 0);
+                    jl_code_instance_t *backedge = (jl_code_instance_t*)backedges[i];
+                    invalidate_code_instance(backedge, max_world, 0);
                     invalidated = 1;
                     if (_jl_debug_method_invalidation)
                         jl_array_ptr_1d_push(_jl_debug_method_invalidation, (jl_value_t*)backedgetyp);
@@ -2271,13 +2268,13 @@ void jl_method_table_activate(jl_methtable_t *mt, jl_typemap_entry_t *newentry)
                         if (backedges) {
                             size_t ib = 0, insb = 0, nb = jl_array_nrows(backedges);
                             jl_value_t *invokeTypes;
-                            jl_method_instance_t *caller;
+                            jl_code_instance_t *caller;
                             while (ib < nb) {
                                 ib = get_next_edge(backedges, ib, &invokeTypes, &caller);
                                 int replaced_edge;
                                 if (invokeTypes) {
                                     // n.b. normally we must have mi.specTypes <: invokeTypes <: m.sig (though it might not strictly hold), so we only need to check the other subtypes
-                                    if (jl_egal(invokeTypes, caller->def.method->sig))
+                                    if (jl_egal(invokeTypes, caller->def->def.method->sig))
                                         replaced_edge = 0; // if invokeTypes == m.sig, then the only way to change this invoke is to replace the method itself
                                     else
                                         replaced_edge = jl_subtype(invokeTypes, type) && is_replacing(ambig, type, m, d, n, invokeTypes, NULL, morespec);
@@ -2286,7 +2283,7 @@ void jl_method_table_activate(jl_methtable_t *mt, jl_typemap_entry_t *newentry)
                                     replaced_edge = replaced_dispatch;
                                 }
                                 if (replaced_edge) {
-                                    invalidate_method_instance(caller, max_world, 1);
+                                    invalidate_code_instance(caller, max_world, 1);
                                     invalidated = 1;
                                 }
                                 else {

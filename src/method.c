@@ -826,8 +826,12 @@ JL_DLLEXPORT jl_code_info_t *jl_code_for_staged(jl_method_instance_t *mi, size_t
         if (cache || needs_cache_for_correctness) {
             uninferred = (jl_code_info_t*)jl_copy_ast((jl_value_t*)func);
             ci = jl_new_codeinst_for_uninferred(mi, uninferred);
-
-            if (uninferred->edges != jl_nothing) {
+            jl_code_instance_t *cached_ci = jl_cache_uninferred(mi, cache_ci, world, ci);
+            if (cached_ci != ci) {
+                func = (jl_code_info_t*)jl_copy_ast(jl_atomic_load_relaxed(&cached_ci->inferred));
+                assert(jl_is_code_info(func));
+            }
+            else if (uninferred->edges != jl_nothing) {
                 // N.B.: This needs to match `store_backedges` on the julia side
                 jl_value_t *edges = uninferred->edges;
                 size_t l;
@@ -843,25 +847,19 @@ JL_DLLEXPORT jl_code_info_t *jl_code_for_staged(jl_method_instance_t *mi, size_t
                 for (size_t i = 0; i < l; ) {
                     kind = data[i++];
                     if (jl_is_method_instance(kind)) {
-                        jl_method_instance_add_backedge((jl_method_instance_t*)kind, jl_nothing, mi);
+                        jl_method_instance_add_backedge((jl_method_instance_t*)kind, jl_nothing, ci);
                     }
                     else if (jl_is_mtable(kind)) {
                         assert(i < l);
                         ex = data[i++];
-                        jl_method_table_add_backedge((jl_methtable_t*)kind, ex, (jl_value_t*)mi);
+                        jl_method_table_add_backedge((jl_methtable_t*)kind, ex, ci);
                     }
                     else {
                         assert(i < l);
                         ex = data[i++];
-                        jl_method_instance_add_backedge((jl_method_instance_t*)ex, kind, mi);
+                        jl_method_instance_add_backedge((jl_method_instance_t*)ex, kind, ci);
                     }
                 }
-            }
-
-            jl_code_instance_t *cached_ci = jl_cache_uninferred(mi, cache_ci, world, ci);
-            if (cached_ci != ci) {
-                func = (jl_code_info_t*)jl_copy_ast(jl_atomic_load_relaxed(&cached_ci->inferred));
-                assert(jl_is_code_info(func));
             }
             if (cache)
                 *cache = cached_ci;
@@ -1074,27 +1072,27 @@ JL_DLLEXPORT jl_method_t *jl_new_method_uninit(jl_module_t *module)
 // it will be the signature supplied in an `invoke` call.
 // If you don't need `invokesig`, you can set it to NULL on input.
 // Initialize iteration with `i = 0`. Returns `i` for the next backedge to be extracted.
-int get_next_edge(jl_array_t *list, int i, jl_value_t** invokesig, jl_method_instance_t **caller) JL_NOTSAFEPOINT
+int get_next_edge(jl_array_t *list, int i, jl_value_t** invokesig, jl_code_instance_t **caller) JL_NOTSAFEPOINT
 {
     jl_value_t *item = jl_array_ptr_ref(list, i);
-    if (jl_is_method_instance(item)) {
-        // Not an `invoke` call, it's just the MethodInstance
+    if (jl_is_code_instance(item)) {
+        // Not an `invoke` call, it's just the CodeInstance
         if (invokesig != NULL)
             *invokesig = NULL;
-        *caller = (jl_method_instance_t*)item;
+        *caller = (jl_code_instance_t*)item;
         return i + 1;
     }
     assert(jl_is_type(item));
     // An `invoke` call, it's a (sig, MethodInstance) pair
     if (invokesig != NULL)
         *invokesig = item;
-    *caller = (jl_method_instance_t*)jl_array_ptr_ref(list, i + 1);
+    *caller = (jl_code_instance_t*)jl_array_ptr_ref(list, i + 1);
     if (*caller)
-        assert(jl_is_method_instance(*caller));
+        assert(jl_is_code_instance(*caller));
     return i + 2;
 }
 
-int set_next_edge(jl_array_t *list, int i, jl_value_t *invokesig, jl_method_instance_t *caller)
+int set_next_edge(jl_array_t *list, int i, jl_value_t *invokesig, jl_code_instance_t *caller)
 {
     if (invokesig)
         jl_array_ptr_set(list, i++, invokesig);
@@ -1102,7 +1100,7 @@ int set_next_edge(jl_array_t *list, int i, jl_value_t *invokesig, jl_method_inst
     return i;
 }
 
-void push_edge(jl_array_t *list, jl_value_t *invokesig, jl_method_instance_t *caller)
+void push_edge(jl_array_t *list, jl_value_t *invokesig, jl_code_instance_t *caller)
 {
     if (invokesig)
         jl_array_ptr_1d_push(list, invokesig);

@@ -185,9 +185,9 @@ static int has_backedge_to_worklist(jl_method_instance_t *mi, htable_t *visited,
     size_t i = 0, n = jl_array_nrows(mi->backedges);
     int cycle = depth;
     while (i < n) {
-        jl_method_instance_t *be;
+        jl_code_instance_t *be;
         i = get_next_edge(mi->backedges, i, NULL, &be);
-        int child_found = has_backedge_to_worklist(be, visited, stack);
+        int child_found = has_backedge_to_worklist(be->def, visited, stack);
         if (child_found == 1 || child_found == 2) {
             // found what we were looking for, so terminate early
             found = 1;
@@ -1072,7 +1072,7 @@ static void jl_insert_backedges(jl_array_t *edges, jl_array_t *ext_ci_list, size
                     if (jl_is_code_instance(edge))
                         edge = (jl_value_t*)((jl_code_instance_t*)edge)->def;
                     if (jl_is_method_instance(edge)) {
-                        jl_method_instance_add_backedge((jl_method_instance_t*)edge, NULL, caller);
+                        jl_method_instance_add_backedge((jl_method_instance_t*)edge, NULL, codeinst);
                         j += 1;
                     }
                     else if (jl_is_long(edge)) {
@@ -1082,14 +1082,14 @@ static void jl_insert_backedges(jl_array_t *edges, jl_array_t *ext_ci_list, size
                     else if (jl_is_mtable(edge)) {
                         jl_methtable_t *mt = (jl_methtable_t*)edge;
                         jl_value_t *sig = jl_svecref(callees, j + 1);
-                        jl_method_table_add_backedge(mt, sig, (jl_value_t*)caller);
+                        jl_method_table_add_backedge(mt, sig, codeinst);
                         j += 2;
                     }
                     else {
                         jl_value_t *callee = jl_svecref(callees, j + 1);
                         if (jl_is_code_instance(callee))
                             callee = (jl_value_t*)((jl_code_instance_t*)callee)->def;
-                        jl_method_instance_add_backedge((jl_method_instance_t*)callee, edge, caller);
+                        jl_method_instance_add_backedge((jl_method_instance_t*)callee, edge, codeinst);
                         j += 2;
                     }
                 }

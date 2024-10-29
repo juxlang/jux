@@ -911,8 +911,8 @@ static size_t jl_verify_method(jl_code_instance_t *codeinst, size_t minworld, ar
                 jl_array_ptr_1d_push(_jl_debug_method_invalidation, (jl_value_t*)codeinst);
                 jl_array_ptr_1d_push(_jl_debug_method_invalidation, matches);
             }
-            //jl_static_show((JL_STREAM*)ios_stderr, (jl_value_t*)edge);
-            //ios_puts(max_valid == ~(size_t)0 ? "valid\n" : "INVALID\n", ios_stderr);
+            //jl_static_show((JL_STREAM*)ios_stderr, (jl_value_t*)callee->def);
+            //ios_puts(max_valid2 == ~(size_t)0 ? "valid\n" : "INVALID\n", ios_stderr);
             if (max_valid == 0 && !_jl_debug_method_invalidation)
                 break;
         }
@@ -925,7 +925,7 @@ static size_t jl_verify_method(jl_code_instance_t *codeinst, size_t minworld, ar
     }
     jl_atomic_store_relaxed(&codeinst->max_world, max_valid);
     //jl_static_show((JL_STREAM*)ios_stderr, (jl_value_t*)caller);
-    //ios_puts(max_valid == ~(size_t)0 ? "valid\n" : "INVALID\n", ios_stderr);
+    //ios_puts(max_valid == ~(size_t)0 ? "valid\n\n" : "INVALID\n\n", ios_stderr);
     JL_GC_POP();
     return max_valid;
 }

@@ -355,7 +355,8 @@ static void jl_record_edges(jl_method_instance_t *caller, jl_array_t *edges)
 {
     jl_code_instance_t *ci = jl_atomic_load_relaxed(&caller->cache);
     while (ci != NULL) {
-        if (ci->edges && ci->edges != jl_emptysvec && ci->max_world == ~(size_t)0)
+        jl_svec_t *edges = jl_atomic_load_relaxed(&codeinst->edges);
+        if (edges && edges != jl_emptysvec && jl_atomic_load_relaxed(&ci->max_world) == ~(size_t)0)
             jl_array_ptr_1d_push(edges, (jl_value_t*)ci);
         ci = jl_atomic_load_relaxed(&ci->next);
     }

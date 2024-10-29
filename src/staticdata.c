@@ -1764,7 +1764,7 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                 if (s->incremental) {
                     if (jl_atomic_load_relaxed(&ci->max_world) == ~(size_t)0) {
                         if (jl_atomic_load_relaxed(&newci->min_world) > 1) {
-                            //assert(ci->edges != jl_emptysvec); // some code (such as !==) might add a method lookup restriction but not keep the edges
+                            //assert(jl_atomic_load_relaxed(&ci->edges) != jl_emptysvec); // some code (such as !==) might add a method lookup restriction but not keep the edges
                             jl_atomic_store_release(&newci->min_world, ~(size_t)0);
                             jl_atomic_store_release(&newci->max_world, WORLD_AGE_REVALIDATION_SENTINEL);
                             arraylist_push(&s->fixup_objs, (void*)reloc_offset);

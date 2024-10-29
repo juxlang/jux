@@ -355,8 +355,9 @@ static void jl_record_edges(jl_method_instance_t *caller, jl_array_t *edges)
 {
     jl_code_instance_t *ci = jl_atomic_load_relaxed(&caller->cache);
     while (ci != NULL) {
-        jl_svec_t *edges = jl_atomic_load_relaxed(&codeinst->edges);
-        if (edges && edges != jl_emptysvec && jl_atomic_load_relaxed(&ci->max_world) == ~(size_t)0)
+        if (jl_atomic_load_relaxed(&ci->edges) &&
+            jl_atomic_load_relaxed(&ci->edges) != jl_emptysvec &&
+            jl_atomic_load_relaxed(&ci->max_world) == ~(size_t)0)
             jl_array_ptr_1d_push(edges, (jl_value_t*)ci);
         ci = jl_atomic_load_relaxed(&ci->next);
     }
@@ -847,7 +848,7 @@ static size_t jl_verify_method(jl_code_instance_t *codeinst, size_t minworld, ar
     jl_value_t *matches = NULL;
     jl_array_t *maxvalids2 = NULL;
     JL_GC_PUSH4(&loctag, &maxvalids2, &matches, &sig);
-    jl_svec_t *callees = codeinst->edges;
+    jl_svec_t *callees = jl_atomic_load_relaxed(&codeinst->edges);
     assert(jl_is_svec((jl_value_t*)callees));
     for (size_t j = 0; j < jl_svec_len(callees); ) {
         jl_value_t *edge = jl_svecref(callees, j);
@@ -1018,7 +1019,7 @@ static void jl_insert_backedges(jl_array_t *edges, jl_array_t *ext_ci_list, size
     //ios_puts("===\n", ios_stderr);
     //for (size_t i = 0; i < jl_array_nrows(edges); i++) {
     //    jl_code_instance_t *caller = (jl_code_instance_t*)jl_array_ptr_ref(edges, i);
-    //    jl_svec_t *targets = caller->edges;
+    //    jl_svec_t *targets = jl_atomic_load_relaxed(&caller->edges);
     //    ios_puts("  => ", ios_stderr);
     //    jl_(caller);
     //    for (size_t j = 0; j < jl_svec_len(targets); j++) {
@@ -1057,7 +1058,7 @@ static void jl_insert_backedges(jl_array_t *edges, jl_array_t *ext_ci_list, size
         size_t nedges = jl_array_nrows(edges);
         for (size_t i = 0; i < nedges; i++) {
             jl_code_instance_t *codeinst = (jl_code_instance_t*)jl_array_ptr_ref(edges, i);
-            jl_svec_t *callees = codeinst->edges;
+            jl_svec_t *callees = jl_atomic_load_relaxed(&codeinst->edges);
             jl_method_instance_t *caller = codeinst->def;
             if (jl_atomic_load_relaxed(&codeinst->min_world) != minworld)
                 continue;

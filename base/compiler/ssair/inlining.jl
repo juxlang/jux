@@ -1461,10 +1461,10 @@ function semiconcrete_result_item(result::SemiConcreteResult,
         # a `@noinline`-declared method when it's marked as `@constprop :aggressive`.
         # Suppress the inlining here (unless inlining is requested at the callsite).
         (is_declared_noinline(mi.def::Method) && !is_stmt_inline(flag)))
-        return compileable_specialization(result.edge, result.effects, et, info, state)
+        return compileable_specialization(mi, result.effects, et, info, state)
     end
     src_inlining_policy(state.interp, result.ir, info, flag) ||
-        return compileable_specialization(result.edge, result.effects, et, info, state)
+        return compileable_specialization(mi, result.effects, et, info, state)
 
     add_inlining_edge!(et, result.edge)
     preserve_local_sources = OptimizationParams(state.interp).preserve_local_sources

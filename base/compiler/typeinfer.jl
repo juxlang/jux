@@ -735,12 +735,14 @@ function MethodCallResult(::AbstractInterpreter, sv::AbsIntState, method::Method
 end
 
 # allocate a dummy `edge::CodeInstance` to be added by `add_edges!`
-function codeinst_as_edge(edge::MethodInstance, edges::SimpleVector, @nospecialize(owner), min_world::UInt, max_world::UInt)
-    return CodeInstance(edge, owner, Any, Any, nothing, nothing, zero(Int32),
+function codeinst_as_edge(interp::AbstractInterpreter, sv::InferenceState)
+    mi = sv.linfo
+    owner = cache_owner(interp)
+    min_world, max_world = first(sv.valid_worlds), last(sv.valid_worlds)
+    edges = Core.svec(sv.edges...)
+    return CodeInstance(mi, owner, Any, Any, nothing, nothing, zero(Int32),
         min_world, max_world, zero(UInt32), nothing, zero(UInt8), nothing, edges)
 end
-codeinst_as_edge(interp::AbstractInterpreter, sv::InferenceState) =
-    codeinst_as_edge(sv.linfo, Core.svec(sv.edges...), cache_owner(interp), first(sv.valid_worlds), last(sv.valid_worlds))
 
 # compute (and cache) an inferred AST and return the current best estimate of the result type
 function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize(atype), sparams::SimpleVector, caller::AbsIntState, edgecycle::Bool, edgelimited::Bool)

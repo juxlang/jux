@@ -515,8 +515,9 @@ function compute_edges!(sv::InferenceState)
     for i in 1:length(sv.stmt_info)
         add_edges!(edges, sv.stmt_info[i])
     end
-    if sv.src.edges !== nothing && sv.src.edges !== empty_edges
-        append!(edges, sv.src.edges)
+    user_edges = sv.src.edges
+    if user_edges !== nothing && user_edges !== empty_edges
+        append!(edges, user_edges)
     end
     nothing
 end

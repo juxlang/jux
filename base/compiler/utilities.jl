@@ -264,7 +264,14 @@ function iterate(iter::BackedgeIterator, i::Int=1)
         i > length(backedges) && return nothing
         item = backedges[i]
         item isa Int && (i += 2; continue) # ignore the query information if present
-        isa(item, MethodInstance) && (i += 1; continue) # ignore edges which don't contribute info (future style edges)
+        # TODO: These `MethodInstance`s can be categorized into two types:
+        # those that should be recorded as forward edges but are unnecessary as backedges
+        # (such as cases where `abstract_call_method` fails), and
+        # those that should be recorded as backedges, such as those provided by
+        # `abstract_applicable` or user-provided edges.
+        # Ideally, we should avoid recording the former cases as backedges and instead
+        # prepare a special token to represent them.
+        # isa(item, MethodInstance) && (i += 1; continue) # ignore edges which don't contribute info (future style edges)
         isa(item, CodeInstance) && (item = item.def)
         isa(item, MethodInstance) && return BackedgePair(nothing, item), i+1      # regular dispatch
         isa(item, MethodTable) && return BackedgePair(backedges[i+1], item), i+2  # abstract dispatch (legacy style edges)

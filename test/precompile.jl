@@ -915,7 +915,7 @@ precompile_test_harness("code caching") do dir
             # external callers
             mods = Module[]
             for be in mi.backedges
-                push!(mods, be.def.module)
+                push!(mods, (be.def.def::Method).module) # XXX
             end
             @test MA ∈ mods
             @test MB ∈ mods
@@ -924,7 +924,7 @@ precompile_test_harness("code caching") do dir
             # internal callers
             meths = Method[]
             for be in mi.backedges
-                push!(meths, be.def)
+                push!(meths, (be.def::Method).def) # XXX
             end
             @test which(M.g1, ()) ∈ meths
             @test which(M.g2, ()) ∈ meths
@@ -1061,7 +1061,7 @@ precompile_test_harness("code caching") do dir
     end
     idx = only(idxsbits)
     tagbad = invalidations[idx+1]
-    @test isa(tagbad, Int32)
+    @test isa(tagbad, Core.CodeInstance)
     j = findfirst(==(tagbad), invalidations)
     @test invalidations[j-1] == "insert_backedges_callee"
     @test isa(invalidations[j-2], Type)
@@ -1179,12 +1179,7 @@ precompile_test_harness("invoke") do dir
     @eval using $CallerModule
     M = getfield(@__MODULE__, CallerModule)
 
-    function get_method_for_type(func, @nospecialize(T))   # return the method func(::T)
-        for m in methods(func)
-            m.sig.parameters[end] === T && return m
-        end
-        error("no ::Real method found for $func")
-    end
+    get_method_for_type(func, @nospecialize(T)) = which(func, (T,)) # return the method func(::T)
     function nvalid(mi::Core.MethodInstance)
         isdefined(mi, :cache) || return 0
         ci = mi.cache
@@ -1201,7 +1196,7 @@ precompile_test_harness("invoke") do dir
         mi = m.specializations::Core.MethodInstance
         @test length(mi.backedges) == 2
         @test mi.backedges[1] === Tuple{typeof(func), Real}
-        @test isa(mi.backedges[2], Core.MethodInstance)
+        @test isa(mi.backedges[2], Core.CodeInstance)
         @test mi.cache.max_world == typemax(mi.cache.max_world)
     end
     for func in (M.q, M.qnc)
@@ -1209,7 +1204,7 @@ precompile_test_harness("invoke") do dir
         mi = m.specializations::Core.MethodInstance
         @test length(mi.backedges) == 2
         @test mi.backedges[1] === Tuple{typeof(func), Integer}
-        @test isa(mi.backedges[2], Core.MethodInstance)
+        @test isa(mi.backedges[2], Core.CodeInstance)
         @test mi.cache.max_world == typemax(mi.cache.max_world)
     end
 

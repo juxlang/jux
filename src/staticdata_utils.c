@@ -922,7 +922,8 @@ static size_t jl_verify_method(jl_code_instance_t *codeinst, size_t minworld, ar
                 loctag = jl_cstr_to_string("insert_backedges_callee");
                 jl_array_ptr_1d_push(_jl_debug_method_invalidation, loctag);
                 jl_array_ptr_1d_push(_jl_debug_method_invalidation, (jl_value_t*)codeinst);
-                jl_array_ptr_1d_push(_jl_debug_method_invalidation, matches);
+                loctag = jl_cstr_to_string("recursive"); // TODO?
+                jl_array_ptr_1d_push(_jl_debug_method_invalidation, loctag);
             }
             //jl_static_show((JL_STREAM*)ios_stderr, (jl_value_t*)callee->def);
             //ios_puts(max_valid2 == ~(size_t)0 ? "valid\n" : "INVALID\n", ios_stderr);

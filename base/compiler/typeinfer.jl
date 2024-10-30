@@ -99,7 +99,7 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState;
     if opt isa OptimizationState
         result.src = ir_to_codeinf!(opt)
     end
-    # @assert last(result.valid_worlds) <= get_world_counter() || isempty(result.edges)
+    #@assert last(result.valid_worlds) <= get_world_counter() || isempty(caller.edges)
     if isdefined(result, :ci_for_cache) || isdefined(result, :ci_as_edge)
         # if we aren't cached, we don't need this edge
         # but our caller might, so let's just make it anyways
@@ -747,9 +747,18 @@ function codeinst_as_edge(interp::AbstractInterpreter, sv::InferenceState)
     mi = sv.linfo
     owner = cache_owner(interp)
     min_world, max_world = first(sv.valid_worlds), last(sv.valid_worlds)
-    edges = Core.svec(sv.edges...)
-    return CodeInstance(mi, owner, Any, Any, nothing, nothing, zero(Int32),
-        min_world, max_world, zero(UInt32), nothing, zero(UInt8), nothing, edges)
+    if max_world >= get_world_counter()
+        max_world = typemax(UInt)
+    end
+    ci = CodeInstance(mi, owner, Any, Any, nothing, nothing, zero(Int32),
+        min_world, max_world, zero(UInt32), nothing, zero(UInt8), nothing, Core.svec(sv.edges...))
+    if max_world == typemax(UInt)
+        # if we can record all of the backedges in the global reverse-cache,
+        # we can now widen our applicability in the global cache too
+        # TODO: this should probably come after we decide this edge is even useful
+        store_backedges(ci, sv.edges)
+    end
+    return ci
 end
 
 # compute (and cache) an inferred AST and return the current best estimate of the result type

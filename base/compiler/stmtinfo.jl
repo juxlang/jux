@@ -44,7 +44,8 @@ struct MethodMatchInfo <: CallInfo
         return new(results, mt, atype, fullmatch, edges)
     end
 end
-function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
+add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo) = _add_edges_impl(edges, info)
+function _add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo, mi_edge::Bool=false)
     if !fully_covering(info)
         # add legacy-style missing backedge info also
         exists = false
@@ -66,7 +67,7 @@ function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
         edge = info.edges[1]
         m = info.results[1]
         if edge === nothing
-            mi = specialize_method(m)
+            mi = specialize_method(m) # don't allow `Method`-edge for this optimized format
             edge = mi
         else
             mi = edge.def
@@ -88,13 +89,11 @@ function add_edges_impl(edges::Vector{Any}, info::MethodMatchInfo)
         edge = info.edges[i]
         m = info.results[i]
         if edge === nothing
-            # push!(edges, m.method)
-            mi = specialize_method(m)
-            push!(edges, mi)
+            edge = mi_edge ? specialize_method(m) : m.method
         else
             @assert edge.def.def === m.method
-            push!(edges, edge)
         end
+        push!(edges, edge)
     end
     nothing
 end
@@ -112,11 +111,11 @@ function add_one_edge!(edges::Vector{Any}, edge::MethodInstance)
 end
 function add_one_edge!(edges::Vector{Any}, edge::CodeInstance)
     for i in 1:length(edges)
-        edgeᵢ = edges[i]
+        edgeᵢ_orig = edgeᵢ = edges[i]
         edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
         edgeᵢ isa MethodInstance || continue
         if edgeᵢ === edge.def && !(i > 1 && edges[i-1] isa Type)
-            if edges[i] isa MethodInstance
+            if edgeᵢ_orig isa MethodInstance
                 # found edge we can upgrade
                 edges[i] = edge
                 return
@@ -149,7 +148,9 @@ struct UnionSplitInfo <: CallInfo
     split::Vector{MethodMatchInfo}
 end
 add_edges_impl(edges::Vector{Any}, info::UnionSplitInfo) =
-    for split in info.split; add_edges!(edges, split); end
+    _add_edges_impl(edges, info)
+_add_edges_impl(edges::Vector{Any}, info::UnionSplitInfo, mi_edge::Bool=false) =
+    for split in info.split; _add_edges_impl(edges, split, mi_edge); end
 nsplit_impl(info::UnionSplitInfo) = length(info.split)
 getsplit_impl(info::UnionSplitInfo, idx::Int) = getsplit(info.split[idx], 1)
 getresult_impl(::UnionSplitInfo, ::Int) = nothing
@@ -294,21 +295,21 @@ struct InvokeCallInfo <: CallInfo
     result::Union{Nothing,ConstResult}
     atype # ::Type
 end
-function add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo)
+add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo) =
+    _add_edges_impl(edges, info)
+function _add_edges_impl(edges::Vector{Any}, info::InvokeCallInfo, mi_edge::Bool=false)
     edge = info.edge
     if edge === nothing
-        mi = specialize_method(info.match)
-        add_invoke_edge!(edges, info.atype, mi)
-    else
-        add_invoke_edge!(edges, info.atype, edge)
+        edge = mi_edge ? specialize_method(info.match) : info.match.method
     end
+    add_invoke_edge!(edges, info.atype, edge)
     nothing
 end
-function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::MethodInstance)
+function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::Union{MethodInstance,Method})
     for i in 2:length(edges)
         edgeᵢ = edges[i]
         edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
-        edgeᵢ isa MethodInstance || continue
+        edgeᵢ isa MethodInstance || edgeᵢ isa Method || continue
         if edgeᵢ === edge
             edge_minus_1 = edges[i-1]
             if edge_minus_1 isa Type && edge_minus_1 == atype
@@ -321,13 +322,13 @@ function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::Method
 end
 function add_invoke_edge!(edges::Vector{Any}, @nospecialize(atype), edge::CodeInstance)
     for i in 2:length(edges)
-        edgeᵢ = edges[i]
+        edgeᵢ_orig = edgeᵢ = edges[i]
         edgeᵢ isa CodeInstance && (edgeᵢ = edgeᵢ.def)
-        edgeᵢ isa MethodInstance || continue
-        if edgeᵢ === edge.def
+        if ((edgeᵢ isa MethodInstance && edgeᵢ === edge.def) ||
+            (edgeᵢ isa Method && edgeᵢ === edge.def.def))
             edge_minus_1 = edges[i-1]
             if edge_minus_1 isa Type && edge_minus_1 == atype
-                if edges[i] isa MethodInstance
+                if edgeᵢ_orig isa MethodInstance || edgeᵢ_orig isa Method
                     # found edge we can upgrade
                     edges[i] = edge
                     return
@@ -426,8 +427,9 @@ end
 add_edges_impl(edges::Vector{Any}, info::ModifyOpInfo) = add_edges!(edges, info.info)
 
 struct VirtualMethodMatchInfo <: CallInfo
-    info::CallInfo
+    info::Union{MethodMatchInfo,UnionSplitInfo,InvokeCallInfo}
 end
-add_edges_impl(edges::Vector{Any}, info::VirtualMethodMatchInfo) = add_edges!(edges, info.info)
+add_edges_impl(edges::Vector{Any}, info::VirtualMethodMatchInfo) =
+    _add_edges_impl(edges, info.info, #=mi_edge=#true)
 
 @specialize

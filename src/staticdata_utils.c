@@ -750,20 +750,19 @@ static void jl_copy_roots(jl_array_t *method_roots_list, uint64_t key)
     }
 }
 
-static size_t verify_invokesig(jl_value_t *invokesig, jl_method_instance_t *expected, size_t minworld)
+static size_t verify_invokesig(jl_value_t *invokesig, jl_method_t *expected, size_t minworld)
 {
     assert(jl_is_type(invokesig));
-    assert(jl_is_method_instance(expected));
-    jl_method_t *m = ((jl_method_instance_t*)expected)->def.method;
+    assert(jl_is_method(expected));
     size_t min_valid = 0;
     size_t max_valid = ~(size_t)0;
-    if (jl_egal(invokesig, m->sig)) {
-        // the invoke match is `m` for `m->sig`, unless `m` is invalid
-        if (jl_atomic_load_relaxed(&m->deleted_world) < max_valid)
+    if (jl_egal(invokesig, expected->sig)) {
+        // the invoke match is `expected` for `expected->sig`, unless `expected` is invalid
+        if (jl_atomic_load_relaxed(&expected->deleted_world) < max_valid)
             max_valid = 0;
     }
     else {
-        jl_methtable_t *mt = jl_method_get_table(m);
+        jl_methtable_t *mt = jl_method_get_table(expected);
         if ((jl_value_t*)mt == jl_nothing) {
             max_valid = 0;
         }
@@ -773,7 +772,7 @@ static size_t verify_invokesig(jl_value_t *invokesig, jl_method_instance_t *expe
                 max_valid = 0;
             }
             else {
-                if (((jl_method_match_t*)matches)->method != m) {
+                if (((jl_method_match_t*)matches)->method != expected) {
                     max_valid = 0;
                 }
             }
@@ -808,8 +807,14 @@ static size_t verify_call(jl_value_t *sig, jl_svec_t *expecteds, size_t i, size_
                 jl_value_t *t = jl_svecref(expecteds, j + i);
                 if (jl_is_code_instance(t))
                     t = (jl_value_t*)((jl_code_instance_t*)t)->def;
-                assert(jl_is_method_instance(t));
-                if (match == ((jl_method_instance_t*)t)->def.method)
+                jl_method_t *meth;
+                if (jl_is_method(t))
+                    meth = (jl_method_t*)t;
+                else {
+                    assert(jl_is_method_instance(t));
+                    meth = ((jl_method_instance_t*)t)->def.method;
+                }
+                if (match == meth)
                     break;
             }
             if (j == n) {
@@ -853,6 +858,7 @@ static size_t jl_verify_method(jl_code_instance_t *codeinst, size_t minworld, ar
     for (size_t j = 0; j < jl_svec_len(callees); ) {
         jl_value_t *edge = jl_svecref(callees, j);
         size_t max_valid2;
+        assert(!jl_is_method(edge)); // `Method`-edge isn't allowed for the optimized one-edge format
         if (jl_is_code_instance(edge))
             edge = (jl_value_t*)((jl_code_instance_t*)edge)->def;
         if (jl_is_method_instance(edge)) {
@@ -875,10 +881,17 @@ static size_t jl_verify_method(jl_code_instance_t *codeinst, size_t minworld, ar
             continue;
         }
         else {
-            jl_method_instance_t *mi = (jl_method_instance_t*)jl_svecref(callees, j + 1);
-            if (jl_is_code_instance(mi))
-                mi = ((jl_code_instance_t*)mi)->def;
-            max_valid2 = verify_invokesig(edge, mi, minworld);
+            jl_method_instance_t *callee = (jl_method_instance_t*)jl_svecref(callees, j + 1);
+            jl_method_t *meth;
+            if (jl_is_code_instance(callee))
+                callee = ((jl_code_instance_t*)callee)->def;
+            if (jl_is_method_instance(callee))
+                meth = callee->def.method;
+            else {
+                assert(jl_is_method(callee));
+                meth = (jl_method_t*)callee;
+            }
+            max_valid2 = verify_invokesig(edge, meth, minworld);
             j += 2;
         }
         if (max_valid2 < max_valid)
@@ -1069,15 +1082,19 @@ static void jl_insert_backedges(jl_array_t *edges, jl_array_t *ext_ci_list, size
                 // if this callee is still valid, add all the backedges
                 for (size_t j = 0; j < jl_svec_len(callees); ) {
                     jl_value_t *edge = jl_svecref(callees, j);
+                    if (jl_is_long(edge)) {
+                        j += 2; // skip over signature and count but not methods
+                        continue;
+                    }
+                    else if (jl_is_method(edge)) {
+                        j += 1;
+                        continue;
+                    }
                     if (jl_is_code_instance(edge))
                         edge = (jl_value_t*)((jl_code_instance_t*)edge)->def;
                     if (jl_is_method_instance(edge)) {
                         jl_method_instance_add_backedge((jl_method_instance_t*)edge, NULL, codeinst);
                         j += 1;
-                    }
-                    else if (jl_is_long(edge)) {
-                        j += 2; // skip over signature and count but not methods
-                        continue;
                     }
                     else if (jl_is_mtable(edge)) {
                         jl_methtable_t *mt = (jl_methtable_t*)edge;
@@ -1089,6 +1106,10 @@ static void jl_insert_backedges(jl_array_t *edges, jl_array_t *ext_ci_list, size
                         jl_value_t *callee = jl_svecref(callees, j + 1);
                         if (jl_is_code_instance(callee))
                             callee = (jl_value_t*)((jl_code_instance_t*)callee)->def;
+                        else if (jl_is_method(callee)) {
+                            j += 2;
+                            continue;
+                        }
                         jl_method_instance_add_backedge((jl_method_instance_t*)callee, edge, codeinst);
                         j += 2;
                     }
